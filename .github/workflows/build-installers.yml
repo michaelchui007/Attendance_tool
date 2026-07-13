@@ -1,0 +1,53 @@
+name: Build desktop installers
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          architecture: "x64"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build Windows NSIS installer
+        shell: powershell
+        run: ./scripts/build_windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: attendance-windows-x64
+          path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+  macos-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Confirm Apple Silicon runner
+        run: test "$(uname -m)" = "arm64"
+      - name: Build unsigned macOS DMG
+        run: ./scripts/build_macos_dmg.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: attendance-macos-arm64-unsigned
+          path: |
+            release/*.dmg
+            release/*.sha256
+          if-no-files-found: error

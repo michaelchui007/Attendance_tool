@@ -1,0 +1,12 @@
+.DS_Store
+.idea/
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+node_modules/
+dist/
+build/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/binaries/attendance-engine-*
+export_report/*/

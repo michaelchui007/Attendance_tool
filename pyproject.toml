@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "attendance-tool"
+version = "0.1.0"
+description = "Cross-platform attendance calculation engine"
+requires-python = ">=3.11"
+dependencies = [
+  "openpyxl>=3.1,<4",
+  "chinese-calendar>=1.11,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=9,<10",
+  "pyinstaller>=6.21,<7",
+]
+
+[project.scripts]
+attendance-engine = "attendance_engine.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["attendance_engine*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
