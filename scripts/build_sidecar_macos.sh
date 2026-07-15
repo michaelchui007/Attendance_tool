@@ -2,10 +2,25 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON="${PYTHON:-$ROOT/.venv/bin/python}"
+if [[ -z "${PYTHON:-}" ]]; then
+  if [[ -x "$ROOT/.venv/bin/python" ]]; then
+    PYTHON="$ROOT/.venv/bin/python"
+  else
+    PYTHON="python3"
+  fi
+fi
+if [[ ! -x "$PYTHON" ]]; then
+  RESOLVED_PYTHON="$(command -v "$PYTHON" || true)"
+  if [[ -z "$RESOLVED_PYTHON" ]]; then
+    echo "Python interpreter not found: $PYTHON" >&2
+    exit 1
+  fi
+  PYTHON="$RESOLVED_PYTHON"
+fi
 DIST="$ROOT/build/sidecar-macos"
 RESOURCE_DIR="$ROOT/apps/desktop/src-tauri/resources/attendance-engine"
 
+echo "Python: $PYTHON"
 "$PYTHON" -m pip install --no-build-isolation -e "$ROOT[dev]"
 rm -rf "$DIST" "$ROOT/build/pyinstaller-macos"
 "$PYTHON" -m PyInstaller \

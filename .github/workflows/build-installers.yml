@@ -57,6 +57,8 @@ jobs:
       - name: Confirm Apple Silicon runner
         run: test "$(uname -m)" = "arm64"
       - name: Build unsigned macOS DMG
+        env:
+          PYTHON: python3
         run: ./scripts/build_macos_dmg.sh
       - uses: actions/upload-artifact@v4
         with:
