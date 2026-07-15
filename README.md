@@ -74,4 +74,29 @@ scripts\build_windows.bat
 apps\desktop\src-tauri\target\release\bundle\nsis\
 ```
 
-也可以在 GitHub Actions 中手动触发 `Build desktop installers` 工作流生成 Windows EXE 和 unsigned macOS DMG。
+## GitHub Release 自动发布
+
+`Build desktop installers` 工作流会在 Windows EXE 和 macOS DMG 都构建成功后，按照项目版本号自动创建 GitHub Release：
+
+```text
+v0.2.0
+v0.3.0
+v1.0.0
+```
+
+每个 Release 包含 Windows NSIS EXE、macOS unsigned DMG、DMG 独立校验文件以及统一的 `SHA256SUMS.txt`。可以通过两种方式触发：
+
+1. 在 GitHub Actions 页面手动运行 `Build desktop installers`；工作流读取项目版本并自动创建对应 `v版本号` 标签和 Release。
+2. 推送与项目版本一致的标签，例如 `git tag v0.3.0 && git push origin v0.3.0`。
+
+发布前必须同步修改以下五处版本号，工作流会自动校验一致性：
+
+```text
+apps/desktop/package.json
+apps/desktop/src-tauri/tauri.conf.json
+apps/desktop/src-tauri/Cargo.toml
+pyproject.toml
+attendance_engine/__init__.py
+```
+
+同一版本可以针对同一提交重新运行并覆盖安装包；如果该版本标签已经指向其他提交，工作流会拒绝覆盖，此时应先升级版本号。

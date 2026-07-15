@@ -59,7 +59,10 @@ ln -s /Applications "$DMG_STAGE/Applications"
 rm -f "$DMG" "$DMG.sha256"
 hdiutil create -volname "考勤统计" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG"
 hdiutil verify "$DMG"
-shasum -a 256 "$DMG" > "$DMG.sha256"
+(
+  cd "$RELEASE_DIR"
+  shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256"
+)
 
 echo
 echo "unsigned DMG 已生成：$DMG"
