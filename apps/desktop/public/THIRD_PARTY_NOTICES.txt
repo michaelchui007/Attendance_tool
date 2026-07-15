@@ -1,0 +1,15 @@
+Third-Party Font Notice
+=======================
+
+Noto Sans SC
+Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name
+'Source'. Noto is a trademark of Google LLC.
+
+The font files are distributed through @fontsource/noto-sans-sc and are licensed
+under the SIL Open Font License, Version 1.1 (OFL-1.1).
+
+The complete license text is bundled at:
+licenses/Noto-Sans-SC-OFL-1.1.txt
+
+Font source:
+https://fontsource.org/fonts/noto-sans-sc
