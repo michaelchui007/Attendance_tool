@@ -51,6 +51,24 @@ class PunchRecord:
 
 
 @dataclass(slots=True)
+class CompensatoryLeaveRecord:
+    work_date: date
+    minutes: int
+    description: str
+    source_sheet: str
+    source_row: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "workDate": self.work_date.isoformat(),
+            "minutes": self.minutes,
+            "description": self.description,
+            "sourceSheet": self.source_sheet,
+            "sourceRow": self.source_row,
+        }
+
+
+@dataclass(slots=True)
 class AttendanceSource:
     input_path: Path
     employee_name: str
@@ -58,6 +76,7 @@ class AttendanceSource:
     start_date: date
     end_date: date
     records: list[PunchRecord]
+    compensatory_leave_records: list[CompensatoryLeaveRecord] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -69,6 +88,8 @@ class DailyAttendanceResult:
     actual_regular_minutes: int | None
     actual_effective_minutes: int | None
     extra_minutes: int | None
+    compensatory_leave_minutes: int = 0
+    net_extra_minutes: int = 0
     raw_duration_minutes: int | None = None
     lunch_deduction_minutes: int = 0
     location_benefit_minutes: int = 0
@@ -87,6 +108,8 @@ class DailyAttendanceResult:
             "actualRegularMinutes": self.actual_regular_minutes,
             "actualEffectiveMinutes": self.actual_effective_minutes,
             "extraMinutes": self.extra_minutes,
+            "compensatoryLeaveMinutes": self.compensatory_leave_minutes,
+            "netExtraMinutes": self.net_extra_minutes,
             "rawDurationMinutes": self.raw_duration_minutes,
             "lunchDeductionMinutes": self.lunch_deduction_minutes,
             "locationBenefitMinutes": self.location_benefit_minutes,
@@ -117,6 +140,14 @@ class AttendanceReport:
         return sum(day.extra_minutes or 0 for day in self.days)
 
     @property
+    def compensatory_leave_minutes(self) -> int:
+        return sum(day.compensatory_leave_minutes for day in self.days)
+
+    @property
+    def net_extra_minutes(self) -> int:
+        return self.extra_minutes - self.compensatory_leave_minutes
+
+    @property
     def abnormal_day_count(self) -> int:
         return sum(day.status is not CalculationStatus.SUCCESS for day in self.days)
 
@@ -135,10 +166,15 @@ class AttendanceReport:
                 "requiredStandardMinutes": self.required_standard_minutes,
                 "actualEffectiveMinutes": self.actual_effective_minutes,
                 "extraMinutes": self.extra_minutes,
+                "compensatoryLeaveMinutes": self.compensatory_leave_minutes,
+                "netExtraMinutes": self.net_extra_minutes,
                 "normalDayCount": len(self.days) - self.abnormal_day_count,
                 "abnormalDayCount": self.abnormal_day_count,
             },
             "days": [day.to_dict() for day in self.days],
+            "compensatoryLeaves": [
+                record.to_dict() for record in self.source.compensatory_leave_records
+            ],
             "calendar": self.calendar_info,
             "outputPath": str(self.output_path) if self.output_path else None,
         }

@@ -2,7 +2,13 @@ from datetime import date, datetime
 from pathlib import Path
 
 from attendance_engine.calculator import calculate_attendance
-from attendance_engine.models import AttendanceSource, CalculationStatus, PunchRecord, PunchType
+from attendance_engine.models import (
+    AttendanceSource,
+    CalculationStatus,
+    CompensatoryLeaveRecord,
+    PunchRecord,
+    PunchType,
+)
 
 
 def record(day: int, hour: int, minute: int, punch_type: PunchType, location: str = "") -> PunchRecord:
@@ -77,3 +83,35 @@ def test_earliest_check_in_and_latest_check_out_are_used():
     day = calculate_attendance(source(records, date(2026, 7, 2), date(2026, 7, 2))).days[0]
     assert day.first_check_in == datetime(2026, 7, 2, 8, 50)
     assert day.last_check_out == datetime(2026, 7, 2, 19, 20)
+
+
+def test_compensatory_leave_is_deducted_from_net_overtime_even_without_punches():
+    attendance = source([], date(2026, 7, 1), date(2026, 7, 1))
+    attendance.compensatory_leave_records.append(
+        CompensatoryLeaveRecord(
+            work_date=date(2026, 7, 1),
+            minutes=480,
+            description="调休假8.0小时（7/1 09:00 - 7/1 18:30）",
+            source_sheet="概况统计与打卡明细",
+            source_row=5,
+        )
+    )
+
+    report = calculate_attendance(attendance)
+    day = report.days[0]
+
+    assert day.extra_minutes is None
+    assert day.compensatory_leave_minutes == 480
+    assert day.net_extra_minutes == -480
+    assert report.extra_minutes == 0
+    assert report.compensatory_leave_minutes == 480
+    assert report.net_extra_minutes == -480
+    assert report.to_dict()["compensatoryLeaves"] == [
+        {
+            "workDate": "2026-07-01",
+            "minutes": 480,
+            "description": "调休假8.0小时（7/1 09:00 - 7/1 18:30）",
+            "sourceSheet": "概况统计与打卡明细",
+            "sourceRow": 5,
+        }
+    ]

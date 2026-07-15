@@ -47,10 +47,20 @@ def calculate_attendance(
     for record in source.records:
         if source.start_date <= record.work_date <= source.end_date:
             grouped[record.work_date].append(record)
+    compensatory_leave_by_date: dict[date, int] = defaultdict(int)
+    for record in source.compensatory_leave_records:
+        if source.start_date <= record.work_date <= source.end_date:
+            compensatory_leave_by_date[record.work_date] += record.minutes
 
     results: list[DailyAttendanceResult] = []
     for work_date in _date_range(source.start_date, source.end_date):
         records = sorted(grouped.get(work_date, []), key=lambda item: item.timestamp)
+        compensatory_leave_minutes = compensatory_leave_by_date[work_date]
+        leave_message = (
+            [f"假勤申请包含调休 {compensatory_leave_minutes / 60:g} 小时，已从净剩加班时长扣除"]
+            if compensatory_leave_minutes
+            else []
+        )
         day_type = (
             holiday_calendar.classify_day(work_date)
             if holiday_calendar is not None
@@ -72,8 +82,10 @@ def calculate_attendance(
                     actual_regular_minutes=None,
                     actual_effective_minutes=None,
                     extra_minutes=None,
+                    compensatory_leave_minutes=compensatory_leave_minutes,
+                    net_extra_minutes=-compensatory_leave_minutes,
                     records=records,
-                    messages=["当天没有上班或下班打卡记录"],
+                    messages=["当天没有上班或下班打卡记录", *leave_message],
                 )
             )
             continue
@@ -87,9 +99,11 @@ def calculate_attendance(
                     actual_regular_minutes=None,
                     actual_effective_minutes=None,
                     extra_minutes=None,
+                    compensatory_leave_minutes=compensatory_leave_minutes,
+                    net_extra_minutes=-compensatory_leave_minutes,
                     last_check_out=last_check_out,
                     records=records,
-                    messages=["缺少上班打卡，实际工时未计算"],
+                    messages=["缺少上班打卡，实际工时未计算", *leave_message],
                 )
             )
             continue
@@ -103,9 +117,11 @@ def calculate_attendance(
                     actual_regular_minutes=None,
                     actual_effective_minutes=None,
                     extra_minutes=None,
+                    compensatory_leave_minutes=compensatory_leave_minutes,
+                    net_extra_minutes=-compensatory_leave_minutes,
                     first_check_in=first_check_in,
                     records=records,
-                    messages=["缺少下班打卡，实际工时未计算"],
+                    messages=["缺少下班打卡，实际工时未计算", *leave_message],
                 )
             )
             continue
@@ -119,10 +135,12 @@ def calculate_attendance(
                     actual_regular_minutes=None,
                     actual_effective_minutes=None,
                     extra_minutes=None,
+                    compensatory_leave_minutes=compensatory_leave_minutes,
+                    net_extra_minutes=-compensatory_leave_minutes,
                     first_check_in=first_check_in,
                     last_check_out=last_check_out,
                     records=records,
-                    messages=["最晚下班时间不晚于最早上班时间"],
+                    messages=["最晚下班时间不晚于最早上班时间", *leave_message],
                 )
             )
             continue
@@ -147,9 +165,10 @@ def calculate_attendance(
         if lunch_minutes:
             messages.append(f"扣除午休 {lunch_minutes} 分钟")
         if benefit_minutes:
-            messages.append("地点包含“云岭东路586号”，地点福利 30 分钟计入加班/调休计算")
+            messages.append("地点包含“云岭东路586号”，地点福利 30 分钟计入加班计算")
         if not messages:
             messages.append("未发生午休扣除或地点福利加计")
+        messages.extend(leave_message)
 
         results.append(
             DailyAttendanceResult(
@@ -160,6 +179,8 @@ def calculate_attendance(
                 actual_regular_minutes=regular_minutes,
                 actual_effective_minutes=effective_minutes,
                 extra_minutes=extra_minutes,
+                compensatory_leave_minutes=compensatory_leave_minutes,
+                net_extra_minutes=extra_minutes - compensatory_leave_minutes,
                 raw_duration_minutes=raw_minutes,
                 lunch_deduction_minutes=lunch_minutes,
                 location_benefit_minutes=benefit_minutes,

@@ -44,6 +44,7 @@ New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
     --clean `
     --onedir `
     --name attendance-engine `
+    --paths $Root `
     --distpath $Dist `
     --workpath $Work `
     --specpath $SpecPath `
@@ -58,6 +59,10 @@ $SidecarExecutable = Join-Path $SidecarSource "attendance-engine.exe"
 $ResourceDir = Join-Path $Desktop "src-tauri\resources\attendance-engine"
 if (-not (Test-Path $SidecarExecutable)) {
     throw "Sidecar executable was not generated: $SidecarExecutable"
+}
+$SmokeOutput = (& $SidecarExecutable --help 2>&1) -join [Environment]::NewLine
+if ($LASTEXITCODE -ne 0 -or $SmokeOutput -notmatch "(?m)serve") {
+    throw "Sidecar smoke test failed: serve command is unavailable.`n$SmokeOutput"
 }
 Remove-Item $ResourceDir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path (Split-Path $ResourceDir -Parent) | Out-Null

@@ -18,6 +18,12 @@ jobs:
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
+      - name: Run Python engine tests
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --no-build-isolation -e ".[dev]"
+          python -m pytest
       - name: Validate Windows build script
         shell: pwsh
         run: |
@@ -54,16 +60,25 @@ jobs:
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
+      - name: Run Python engine tests
+        run: |
+          python3 -m pip install --upgrade pip setuptools wheel
+          python3 -m pip install --no-build-isolation -e ".[dev]"
+          python3 -m pytest
       - name: Confirm Apple Silicon runner
         run: test "$(uname -m)" = "arm64"
       - name: Build unsigned macOS DMG
         env:
           PYTHON: python3
         run: ./scripts/build_macos_dmg.sh
+      - name: Resolve application version
+        id: app-version
+        run: |
+          echo "version=$(python3 -c 'import json; print(json.load(open("apps/desktop/src-tauri/tauri.conf.json", encoding="utf-8"))["version"])')" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: attendance-macos-arm64-unsigned
           path: |
-            release/*.dmg
-            release/*.sha256
+            release/考勤统计_${{ steps.app-version.outputs.version }}_aarch64_unsigned.dmg
+            release/考勤统计_${{ steps.app-version.outputs.version }}_aarch64_unsigned.dmg.sha256
           if-no-files-found: error

@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime, time, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 from openpyxl import load_workbook
 
-from .models import AttendanceSource, PunchRecord, PunchType
+from .models import AttendanceSource, CompensatoryLeaveRecord, PunchRecord, PunchType
 
 _METADATA_RANGE_RE = re.compile(r"统计时间\s*:\s*(\d{2})-(\d{2})\s*[～~\-]\s*(\d{2})-(\d{2})")
 _METADATA_YEAR_RE = re.compile(r"制表时间\s*:\s*(\d{4})-")
 _DATE_RE = re.compile(r"(\d{4})/(\d{2})/(\d{2})")
 _TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$")
+_COMPENSATORY_LEAVE_RE = re.compile(r"调休(?:假)?\s*(\d+(?:\.\d+)?)\s*小时")
 
 
 class AttendanceParseError(ValueError):
@@ -62,6 +64,39 @@ def _resolve_work_date(timestamp: datetime) -> date:
     return timestamp.date() - timedelta(days=1) if timestamp.time() < time(3, 0) else timestamp.date()
 
 
+def _parse_compensatory_leave_minutes(value: object) -> tuple[int, str]:
+    description = str(value or "").strip()
+    if not description or description == "--":
+        return 0, description
+    hours = sum((Decimal(match) for match in _COMPENSATORY_LEAVE_RE.findall(description)), Decimal())
+    minutes = int((hours * 60).to_integral_value(rounding=ROUND_HALF_UP))
+    return minutes, description
+
+
+def _collect_compensatory_leave(
+    records: dict[tuple[date, str], CompensatoryLeaveRecord],
+    work_date: date | None,
+    value: object,
+    source_sheet: str,
+    source_row: int,
+) -> None:
+    if work_date is None:
+        return
+    minutes, description = _parse_compensatory_leave_minutes(value)
+    if minutes <= 0:
+        return
+    records.setdefault(
+        (work_date, description),
+        CompensatoryLeaveRecord(
+            work_date=work_date,
+            minutes=minutes,
+            description=description,
+            source_sheet=source_sheet,
+            source_row=source_row,
+        ),
+    )
+
+
 def parse_attendance_workbook(input_path: str | Path) -> AttendanceSource:
     path = Path(input_path).expanduser().resolve()
     if not path.exists():
@@ -79,6 +114,7 @@ def parse_attendance_workbook(input_path: str | Path) -> AttendanceSource:
 
     records: list[PunchRecord] = []
     employees: set[tuple[str, str]] = set()
+    compensatory_leave_records: dict[tuple[date, str], CompensatoryLeaveRecord] = {}
 
     for row_index, row in enumerate(detail_sheet.iter_rows(min_row=5, values_only=True), start=5):
         natural_date = _parse_natural_date(row[0] if len(row) > 0 else None)
@@ -88,6 +124,13 @@ def parse_attendance_workbook(input_path: str | Path) -> AttendanceSource:
         actual_time = _parse_time(row[8] if len(row) > 8 else None)
         punch_status = str(row[9] or "").strip() if len(row) > 9 else ""
         location = str(row[10] or "").strip() if len(row) > 10 else ""
+        _collect_compensatory_leave(
+            compensatory_leave_records,
+            natural_date,
+            row[14] if len(row) > 14 else None,
+            detail_sheet.title,
+            row_index,
+        )
 
         if not natural_date or not employee_name:
             continue
@@ -115,12 +158,19 @@ def parse_attendance_workbook(input_path: str | Path) -> AttendanceSource:
             )
         )
 
-    if not employees and "概况统计与打卡明细" in workbook.sheetnames:
+    if "概况统计与打卡明细" in workbook.sheetnames:
         summary_sheet = workbook["概况统计与打卡明细"]
-        for row in summary_sheet.iter_rows(min_row=5, values_only=True):
-            if row and row[1]:
+        for row_index, row in enumerate(summary_sheet.iter_rows(min_row=5, values_only=True), start=5):
+            natural_date = _parse_natural_date(row[0] if len(row) > 0 else None)
+            if len(row) > 1 and row[1]:
                 employees.add((str(row[1]).strip(), str(row[2] or "").strip()))
-                break
+            _collect_compensatory_leave(
+                compensatory_leave_records,
+                natural_date,
+                row[13] if len(row) > 13 else None,
+                summary_sheet.title,
+                row_index,
+            )
 
     if not employees:
         raise AttendanceParseError("没有找到员工信息")
@@ -137,4 +187,8 @@ def parse_attendance_workbook(input_path: str | Path) -> AttendanceSource:
         start_date=start_date,
         end_date=end_date,
         records=records,
+        compensatory_leave_records=sorted(
+            compensatory_leave_records.values(),
+            key=lambda item: (item.work_date, item.description),
+        ),
     )

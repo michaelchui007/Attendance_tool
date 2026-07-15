@@ -1,7 +1,9 @@
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use tauri::async_runtime::{Mutex, Receiver};
 use tauri::{AppHandle, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
@@ -13,6 +15,48 @@ struct EngineConnection {
 #[derive(Default)]
 struct EngineState {
     connection: Mutex<Option<EngineConnection>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativePathSelection {
+    path: Option<String>,
+    path_utf16: Option<Vec<u16>>,
+}
+
+#[cfg(target_os = "windows")]
+fn native_path_selection(path: PathBuf) -> NativePathSelection {
+    use std::os::windows::ffi::OsStrExt;
+
+    NativePathSelection {
+        path: None,
+        path_utf16: Some(path.as_os_str().encode_wide().collect()),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn native_path_selection(path: PathBuf) -> NativePathSelection {
+    NativePathSelection {
+        path: path.to_str().map(str::to_owned),
+        path_utf16: None,
+    }
+}
+
+#[tauri::command]
+async fn pick_excel_file(app: AppHandle) -> Result<Option<NativePathSelection>, String> {
+    let selected = app
+        .dialog()
+        .file()
+        .add_filter("Excel", &["xlsx"])
+        .blocking_pick_file();
+    selected
+        .map(|value| {
+            value
+                .into_path()
+                .map(native_path_selection)
+                .map_err(|error| format!("无法读取所选 Excel 路径：{error}"))
+        })
+        .transpose()
 }
 
 fn engine_executable(app: &AppHandle) -> Result<PathBuf, String> {
@@ -172,7 +216,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![calculate_attendance])
+        .invoke_handler(tauri::generate_handler![pick_excel_file, calculate_attendance])
         .run(tauri::generate_context!())
         .expect("error while running attendance desktop application");
 }

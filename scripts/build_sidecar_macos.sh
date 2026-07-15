@@ -21,6 +21,7 @@ DIST="$ROOT/build/sidecar-macos"
 RESOURCE_DIR="$ROOT/apps/desktop/src-tauri/resources/attendance-engine"
 
 echo "Python: $PYTHON"
+"$PYTHON" -m pip install --upgrade pip setuptools wheel
 "$PYTHON" -m pip install --no-build-isolation -e "$ROOT[dev]"
 rm -rf "$DIST" "$ROOT/build/pyinstaller-macos"
 "$PYTHON" -m PyInstaller \
@@ -28,6 +29,7 @@ rm -rf "$DIST" "$ROOT/build/pyinstaller-macos"
   --clean \
   --onedir \
   --name attendance-engine \
+  --paths "$ROOT" \
   --distpath "$DIST" \
   --workpath "$ROOT/build/pyinstaller-macos" \
   --specpath "$ROOT/build" \
@@ -37,4 +39,9 @@ rm -rf "$RESOURCE_DIR"
 mkdir -p "$(dirname "$RESOURCE_DIR")"
 cp -R "$DIST/attendance-engine" "$RESOURCE_DIR"
 chmod +x "$RESOURCE_DIR/attendance-engine"
+ENGINE_HELP="$("$RESOURCE_DIR/attendance-engine" --help)"
+if [[ "$ENGINE_HELP" != *"serve"* ]]; then
+  echo "Sidecar smoke test failed: serve command is unavailable." >&2
+  exit 1
+fi
 echo "Sidecar resource: $RESOURCE_DIR"

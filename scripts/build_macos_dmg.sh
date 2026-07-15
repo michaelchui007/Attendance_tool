@@ -5,9 +5,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DESKTOP="$ROOT/apps/desktop"
 APP="$DESKTOP/src-tauri/target/release/bundle/macos/考勤统计.app"
 RELEASE_DIR="$ROOT/release"
-DMG="$RELEASE_DIR/考勤统计_0.1.0_aarch64_unsigned.dmg"
 DMG_STAGE="$ROOT/build/dmg-stage"
 NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmjs.org}"
+PYTHON="${PYTHON:-python3}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "此脚本必须在 macOS 上运行。" >&2
@@ -21,9 +21,11 @@ if [[ -f "$HOME/.cargo/env" ]]; then
   # shellcheck disable=SC1090
   source "$HOME/.cargo/env"
 fi
-for command in python3 npm cargo codesign hdiutil; do
+for command in "$PYTHON" npm cargo codesign hdiutil; do
   command -v "$command" >/dev/null || { echo "缺少命令：$command" >&2; exit 1; }
 done
+APP_VERSION="$("$PYTHON" -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' "$DESKTOP/src-tauri/tauri.conf.json")"
+DMG="$RELEASE_DIR/考勤统计_${APP_VERSION}_aarch64_unsigned.dmg"
 
 "$ROOT/scripts/build_sidecar_macos.sh"
 cd "$DESKTOP"
@@ -38,6 +40,17 @@ npm run tauri build -- --bundles app
 # seals the local bundle and embedded Sidecar so bundle integrity can be checked.
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
+
+ENGINE="$APP/Contents/Resources/resources/attendance-engine/attendance-engine"
+if [[ ! -x "$ENGINE" ]]; then
+  echo "考勤计算引擎不存在或不可执行：$ENGINE" >&2
+  exit 1
+fi
+ENGINE_HELP="$("$ENGINE" --help)"
+if [[ "$ENGINE_HELP" != *"serve"* ]]; then
+  echo "考勤计算引擎启动检查失败：serve 命令不可用。" >&2
+  exit 1
+fi
 
 rm -rf "$DMG_STAGE"
 mkdir -p "$DMG_STAGE" "$RELEASE_DIR"

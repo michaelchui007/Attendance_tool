@@ -7,6 +7,8 @@ export interface AttendanceDay {
   actualRegularMinutes: number | null;
   actualEffectiveMinutes: number | null;
   extraMinutes: number | null;
+  compensatoryLeaveMinutes: number;
+  netExtraMinutes: number;
   rawDurationMinutes: number | null;
   lunchDeductionMinutes: number;
   locationBenefitMinutes: number;
@@ -29,10 +31,19 @@ export interface AttendanceResult {
     requiredStandardMinutes: number;
     actualEffectiveMinutes: number;
     extraMinutes: number;
+    compensatoryLeaveMinutes: number;
+    netExtraMinutes: number;
     normalDayCount: number;
     abnormalDayCount: number;
   };
   days: AttendanceDay[];
+  compensatoryLeaves: Array<{
+    workDate: string;
+    minutes: number;
+    description: string;
+    sourceSheet: string;
+    sourceRow: number;
+  }>;
   calendar: {
     strategy: string;
     years: Array<{
@@ -44,4 +55,9 @@ export interface AttendanceResult {
     warnings: string[];
   };
   outputPath: string;
+}
+
+export interface NativePathSelection {
+  path: string | null;
+  pathUtf16: number[] | null;
 }
