@@ -74,30 +74,4 @@ scripts\build_windows.bat
 apps\desktop\src-tauri\target\release\bundle\nsis\
 ```
 
-### Windows 完全离线构建
-
-联网的 Windows x64 机器可以先生成一个包含 Python wheels、`node_modules`、Cargo vendor 和 Tauri/NSIS 工具缓存的离线构建包：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_windows_offline_bundle.ps1
-```
-
-生成文件：
-
-```text
-release\Attendance_tool_windows_x64_offline.zip
-release\Attendance_tool_windows_x64_offline.zip.sha256
-```
-
-把 ZIP 复制到断网 Windows，建议解压到 `C:\Attendance_tool`，然后执行：
-
-```powershell
-cd C:\Attendance_tool
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_windows_offline.ps1
-```
-
-也可以双击 `scripts\build_windows_offline.bat`。
-
-离线包包含项目级依赖，但断网电脑仍需预先安装与离线包匹配的 Python x64、Node.js、Rust MSVC 工具链，以及 Visual Studio 2022 Build Tools 的“使用 C++ 的桌面开发”和 Windows SDK。这些属于系统编译工具，不能通过复制 Python/npm 模块替代。
-
-也可以在 GitHub Actions 中手动触发 `Build desktop installers`。工作流会同时生成 Windows EXE、Windows 离线构建包和 unsigned macOS DMG。
+也可以在 GitHub Actions 中手动触发 `Build desktop installers` 工作流生成 Windows EXE 和 unsigned macOS DMG。

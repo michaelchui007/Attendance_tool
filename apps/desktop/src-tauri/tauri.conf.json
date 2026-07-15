@@ -40,7 +40,6 @@
       "nsis": {
         "installMode": "currentUser"
       }
-    },
-    "useLocalToolsDir": true
+    }
   }
 }

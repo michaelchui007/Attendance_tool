@@ -11,7 +11,3 @@ apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/binaries/attendance-engine-*
 apps/desktop/src-tauri/resources/attendance-engine/
 export_report/*/
-# Generated Windows offline build kit (contains vendored platform dependencies).
-release/Attendance_tool_windows_x64_offline/
-release/Attendance_tool_windows_x64_offline.zip
-release/Attendance_tool_windows_x64_offline.zip.sha256
