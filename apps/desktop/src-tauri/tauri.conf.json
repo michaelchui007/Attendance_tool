@@ -27,7 +27,7 @@
   "bundle": {
     "active": true,
     "targets": ["dmg", "nsis"],
-    "externalBin": ["binaries/attendance-engine"],
+    "resources": ["resources/attendance-engine/"],
     "category": "Productivity",
     "shortDescription": "本地考勤统计与加班调休计算工具",
     "longDescription": "读取员工个人考勤 Excel 报表，按照工作日、节假日、午休、跨日和地点福利规则生成统计结果。",

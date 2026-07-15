@@ -1,5 +1,5 @@
 :root {
-  font-family: Inter, "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: "Noto Sans SC", Inter, "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif;
   color: #152235;
   background: #edf2f6;
   font-synthesis: none;
@@ -31,6 +31,8 @@ h1 { margin: 0; font-size: 42px; letter-spacing: -.04em; }
 .result-heading { display: flex; justify-content: space-between; align-items: end; margin: 32px 2px 15px; }
 .result-heading h2 { margin: 0; font-size: 26px; }
 .result-heading h2 span { margin-left: 8px; color: #8a97a7; font-size: 14px; font-weight: 500; }
+.result-meta { display: grid; gap: 5px; justify-items: end; }
+.calendar-note { color: #397a71; font-size: 12px; }
 .export-note { max-width: 540px; color: #708095; font-size: 12px; }
 .export-note span { display: inline-block; max-width: 430px; vertical-align: bottom; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #397a71; }
 .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }

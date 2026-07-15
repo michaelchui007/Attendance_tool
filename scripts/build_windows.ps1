@@ -42,7 +42,7 @@ New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
 & $VenvPython -m PyInstaller `
     --noconfirm `
     --clean `
-    --onefile `
+    --onedir `
     --name attendance-engine `
     --distpath $Dist `
     --workpath $Work `
@@ -52,15 +52,16 @@ if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller sidecar build failed."
 }
 
-Write-Host "[3/5] Installing the sidecar for Tauri..."
-$SidecarSource = Join-Path $Dist "attendance-engine.exe"
-$BinaryDir = Join-Path $Desktop "src-tauri\binaries"
-$SidecarTarget = Join-Path $BinaryDir "attendance-engine-x86_64-pc-windows-msvc.exe"
-if (-not (Test-Path $SidecarSource)) {
-    throw "Sidecar executable was not generated: $SidecarSource"
+Write-Host "[3/5] Installing the sidecar resource for Tauri..."
+$SidecarSource = Join-Path $Dist "attendance-engine"
+$SidecarExecutable = Join-Path $SidecarSource "attendance-engine.exe"
+$ResourceDir = Join-Path $Desktop "src-tauri\resources\attendance-engine"
+if (-not (Test-Path $SidecarExecutable)) {
+    throw "Sidecar executable was not generated: $SidecarExecutable"
 }
-New-Item -ItemType Directory -Force -Path $BinaryDir | Out-Null
-Copy-Item $SidecarSource $SidecarTarget -Force
+Remove-Item $ResourceDir -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path (Split-Path $ResourceDir -Parent) | Out-Null
+Copy-Item $SidecarSource $ResourceDir -Recurse -Force
 
 Write-Host "[4/5] Installing frontend dependencies..."
 Push-Location $Desktop

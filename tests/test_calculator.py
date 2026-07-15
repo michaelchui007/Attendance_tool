@@ -14,10 +14,10 @@ def source(records: list[PunchRecord], start: date, end: date) -> AttendanceSour
     return AttendanceSource(Path("input.xlsx"), "测试员工", "tester", start, end, records)
 
 
-def test_workday_lunch_and_location_benefit():
+def test_location_benefit_is_credited_to_overtime_instead_of_deducted_from_work():
     records = [
         record(1, 9, 0, PunchType.CHECK_IN, "弘快科技 | 上海市普陀区云岭东路586号"),
-        record(1, 19, 0, PunchType.CHECK_OUT),
+        record(1, 18, 30, PunchType.CHECK_OUT),
     ]
     report = calculate_attendance(source(records, date(2026, 7, 1), date(2026, 7, 1)))
     day = report.days[0]
@@ -25,7 +25,17 @@ def test_workday_lunch_and_location_benefit():
     assert day.lunch_deduction_minutes == 90
     assert day.location_benefit_minutes == 30
     assert day.actual_effective_minutes == 480
-    assert day.extra_minutes == 0
+    assert day.extra_minutes == 30
+
+
+def test_location_benefit_adds_to_existing_workday_overtime():
+    records = [
+        record(1, 9, 0, PunchType.CHECK_IN, "云岭东路586号"),
+        record(1, 19, 0, PunchType.CHECK_OUT),
+    ]
+    day = calculate_attendance(source(records, date(2026, 7, 1), date(2026, 7, 1))).days[0]
+    assert day.actual_effective_minutes == 510
+    assert day.extra_minutes == 60
 
 
 def test_weekend_has_no_lunch_or_location_benefit():

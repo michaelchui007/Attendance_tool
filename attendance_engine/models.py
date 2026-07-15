@@ -102,6 +102,7 @@ class AttendanceReport:
     source: AttendanceSource
     days: list[DailyAttendanceResult]
     output_path: Path | None = None
+    calendar_info: dict[str, Any] = field(default_factory=dict)
 
     @property
     def required_standard_minutes(self) -> int:
@@ -138,5 +139,6 @@ class AttendanceReport:
                 "abnormalDayCount": self.abnormal_day_count,
             },
             "days": [day.to_dict() for day in self.days],
+            "calendar": self.calendar_info,
             "outputPath": str(self.output_path) if self.output_path else None,
         }

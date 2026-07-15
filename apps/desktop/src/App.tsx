@@ -15,6 +15,11 @@ function formatTime(value: string | null): string {
   return value.slice(11, 16);
 }
 
+function calendarSourceLabel(result: AttendanceResult): string {
+  const labels = { online: "在线更新", cache: "本地缓存", "stale-cache": "离线缓存", builtin: "内置数据" };
+  return result.calendar.years.map((item) => `${item.year} ${labels[item.source]}`).join(" · ");
+}
+
 function App() {
   const [inputPath, setInputPath] = useState("");
   const [outputRoot, setOutputRoot] = useState("");
@@ -114,7 +119,10 @@ function App() {
               <p className="eyebrow">{result.period.startDate} — {result.period.endDate}</p>
               <h2>{result.employee.name} <span>{result.employee.account}</span></h2>
             </div>
-            <div className="export-note">已导出：<span title={result.outputPath}>{result.outputPath}</span></div>
+            <div className="result-meta">
+              <div className="calendar-note">节假日数据：{calendarSourceLabel(result)}</div>
+              <div className="export-note">已导出：<span title={result.outputPath}>{result.outputPath}</span></div>
+            </div>
           </section>
 
           <section className="kpi-grid">
@@ -163,7 +171,7 @@ function App() {
                     <div><span>应计标准工时</span><strong>{formatMinutes(selectedDay.requiredStandardMinutes)}</strong></div>
                     <div><span>原始跨度</span><strong>{formatMinutes(selectedDay.rawDurationMinutes)}</strong></div>
                     <div><span>午休扣除</span><strong>- {formatMinutes(selectedDay.lunchDeductionMinutes)}</strong></div>
-                    <div><span>地点福利扣除</span><strong>- {formatMinutes(selectedDay.locationBenefitMinutes)}</strong></div>
+                    <div><span>地点福利加计</span><strong>+ {formatMinutes(selectedDay.locationBenefitMinutes)}</strong></div>
                     <div className="total"><span>实际有效工时</span><strong>{formatMinutes(selectedDay.actualEffectiveMinutes)}</strong></div>
                     <div className="total extra"><span>加班/调休时长</span><strong>{formatMinutes(selectedDay.extraMinutes)}</strong></div>
                   </div>

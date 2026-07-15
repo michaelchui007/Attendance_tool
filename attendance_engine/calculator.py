@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 
-from .calendar import classify_day
+from .calendar import HolidayCalendar, classify_day
 from .models import (
     AttendanceReport,
     AttendanceSource,
@@ -39,7 +39,10 @@ def _lunch_overlap_minutes(work_date: date, start: datetime, end: datetime) -> i
     return _minutes_between(overlap_start, overlap_end) if overlap_end > overlap_start else 0
 
 
-def calculate_attendance(source: AttendanceSource) -> AttendanceReport:
+def calculate_attendance(
+    source: AttendanceSource,
+    holiday_calendar: HolidayCalendar | None = None,
+) -> AttendanceReport:
     grouped: dict[date, list[PunchRecord]] = defaultdict(list)
     for record in source.records:
         if source.start_date <= record.work_date <= source.end_date:
@@ -48,7 +51,11 @@ def calculate_attendance(source: AttendanceSource) -> AttendanceReport:
     results: list[DailyAttendanceResult] = []
     for work_date in _date_range(source.start_date, source.end_date):
         records = sorted(grouped.get(work_date, []), key=lambda item: item.timestamp)
-        day_type = classify_day(work_date)
+        day_type = (
+            holiday_calendar.classify_day(work_date)
+            if holiday_calendar is not None
+            else classify_day(work_date)
+        )
         required_standard = STANDARD_MINUTES if day_type.is_workday else 0
         check_ins = [record for record in records if record.punch_type is PunchType.CHECK_IN]
         check_outs = [record for record in records if record.punch_type is PunchType.CHECK_OUT]
@@ -125,9 +132,10 @@ def calculate_attendance(source: AttendanceSource) -> AttendanceReport:
             lunch_minutes = _lunch_overlap_minutes(work_date, first_check_in, last_check_out)
             has_benefit = any(LOCATION_KEYWORD in record.location for record in records)
             benefit_minutes = LOCATION_BENEFIT_MINUTES if has_benefit else 0
-            effective_minutes = max(0, raw_minutes - lunch_minutes - benefit_minutes)
+            effective_minutes = max(0, raw_minutes - lunch_minutes)
             regular_minutes = min(effective_minutes, STANDARD_MINUTES)
-            extra_minutes = max(0, effective_minutes - STANDARD_MINUTES)
+            credited_minutes = effective_minutes + benefit_minutes
+            extra_minutes = max(0, credited_minutes - STANDARD_MINUTES)
         else:
             lunch_minutes = 0
             benefit_minutes = 0
@@ -139,9 +147,9 @@ def calculate_attendance(source: AttendanceSource) -> AttendanceReport:
         if lunch_minutes:
             messages.append(f"扣除午休 {lunch_minutes} 分钟")
         if benefit_minutes:
-            messages.append("地点包含“云岭东路586号”，扣除异地办公福利 30 分钟")
+            messages.append("地点包含“云岭东路586号”，地点福利 30 分钟计入加班/调休计算")
         if not messages:
-            messages.append("未发生午休或地点福利扣除")
+            messages.append("未发生午休扣除或地点福利加计")
 
         results.append(
             DailyAttendanceResult(
@@ -162,4 +170,8 @@ def calculate_attendance(source: AttendanceSource) -> AttendanceReport:
             )
         )
 
-    return AttendanceReport(source=source, days=results)
+    return AttendanceReport(
+        source=source,
+        days=results,
+        calendar_info=holiday_calendar.to_dict() if holiday_calendar is not None else {},
+    )

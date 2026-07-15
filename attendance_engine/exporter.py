@@ -48,6 +48,15 @@ def _autofit(ws, min_width: int = 10, max_width: int = 38) -> None:
         ws.column_dimensions[get_column_letter(column_cells[0].column)].width = width
 
 
+def _calendar_source_text(report: AttendanceReport) -> str:
+    labels = {"online": "在线更新", "cache": "本地缓存", "stale-cache": "离线缓存", "builtin": "内置数据"}
+    years = report.calendar_info.get("years", [])
+    return "；".join(
+        f"{item['year']}年 {labels.get(item['source'], item['source'])}"
+        for item in years
+    ) or "未记录"
+
+
 def export_report(report: AttendanceReport, export_root: str | Path | None = None) -> Path:
     source = report.source
     root = Path(export_root).expanduser().resolve() if export_root else source.input_path.parent / "export_report"
@@ -81,6 +90,11 @@ def export_report(report: AttendanceReport, export_root: str | Path | None = Non
         cell.alignment = Alignment(horizontal="center", vertical="center")
     summary.row_dimensions[4].height = 28
     summary.append([])
+    summary["A5"] = "节假日数据"
+    summary.merge_cells("B5:H5")
+    summary["B5"] = _calendar_source_text(report)
+    summary["A5"].font = Font(bold=True, color="16324F")
+    summary["B5"].alignment = Alignment(vertical="center")
     summary.append(["日期", "日期类型", "状态", "应计标准", "实际有效", "加班/调休", "最早上班", "最晚下班"])
     _style_header(summary, 6, 1, 8)
     for day in report.days:
@@ -110,7 +124,7 @@ def export_report(report: AttendanceReport, export_root: str | Path | None = Non
     details.sheet_view.showGridLines = False
     headers = [
         "日期", "星期", "日期类型", "状态", "应计标准工时", "最早上班", "最晚下班", "原始跨度",
-        "午休扣除", "地点福利扣除", "实际正常工时", "实际有效工时", "加班/调休时长", "计算说明",
+        "午休扣除", "地点福利加计", "实际正常工时", "实际有效工时", "加班/调休时长", "计算说明",
     ]
     details.append(headers)
     _style_header(details, 1, 1, len(headers))

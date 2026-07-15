@@ -33,5 +33,15 @@ export interface AttendanceResult {
     abnormalDayCount: number;
   };
   days: AttendanceDay[];
+  calendar: {
+    strategy: string;
+    years: Array<{
+      year: number;
+      source: "online" | "cache" | "stale-cache" | "builtin";
+      fetchedAt?: string;
+      sourceUrl?: string;
+    }>;
+    warnings: string[];
+  };
   outputPath: string;
 }
