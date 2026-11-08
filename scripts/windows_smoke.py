@@ -324,7 +324,8 @@ def test_gui(application: Path, driver_path: Path, root: Path) -> dict:
         dialog_errors = []
         def select_files():
             try:
-                dialog = Desktop(backend="win32").window(class_name="#32770")
+                # runner可能同时存在系统属性弹窗，只操作本应用创建的文件对话框。
+                dialog = Desktop(backend="win32").window(process=application_process.pid, class_name="#32770")
                 dialog.wait("visible", timeout=30)
                 # 使用原生文件名快捷键和Unicode剪贴板，避免误定位到搜索框。
                 import win32clipboard
