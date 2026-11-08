@@ -107,7 +107,7 @@ def merge_workbooks(
             raise ValueError(f'无法读取文件 {path.name}：{exc}') from exc
         hits += hit
         duplicate = ident in seen
-        files.append({'id': ident, 'path': str(path), 'name': path.name,
+        files.append({'id': ident, 'path': str(path), 'inputPath': value, 'name': path.name,
                       'startDate': source.start_date.isoformat(), 'endDate': source.end_date.isoformat(),
                       'duplicateOf': ident if duplicate else None, 'cacheHit': hit})
         if duplicate:

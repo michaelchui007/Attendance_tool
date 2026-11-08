@@ -15,7 +15,7 @@ type Overrides = Record<string, DayOverride>;
 import SettingsPage from './components/SettingsPage';
 import DayEditor from './components/DayEditor';
 import { readSettings, saveSettings, validateSettings } from './settings';
-import { decodeNativePath, pathUtf16 } from './nativePaths';
+import { decodeNativePath, matchesSourceInput, pathUtf16, sourceChoiceLabel, unknownCoveragePaths } from './nativePaths';
 
 /** 日期标签始终保留跨日信息，不把次日下班伪装成当天。 */
 function PunchTime({ value, workDate }: { value: string | null; workDate: string }) {
@@ -110,8 +110,12 @@ function App() {
   function removeFile(path: string) {
     if (loading || selecting) return;
     const next = files.filter(file => file.path !== path);
+    if ((Object.keys(overrides).length || Object.keys(drafts).length) && unknownCoveragePaths(next.map(file => file.path), result?.sources || []).length) {
+      setError('剩余文件尚未解析，无法确认哪些日期的修订仍有效。请先统计当前文件集，确认覆盖范围后再移除文件；已有修订已保留。');
+      return;
+    }
     if (!window.confirm('移除此文件后需要重新统计。已不在剩余文件覆盖范围内的修订将被移除，是否继续？')) return;
-    const remaining = result?.sources.filter(source => next.some(file => file.path === source.path)) || [];
+    const remaining = result?.sources.filter(source => next.some(file => matchesSourceInput(source, file.path))) || [];
     const keep = (items: Overrides) => Object.fromEntries(Object.entries(items).filter(([date]) => remaining.some(source => source.startDate <= date && source.endDate >= date)));
     setFiles(next); setOverrides(keep(overrides)); setDrafts(keep(drafts)); setSourceChoices({}); setChoicesChanged(false);
     setNotice('文件已移除；失去对应数据的修订已清理，请重新统计。');
@@ -191,7 +195,7 @@ function App() {
       <div className="file-icon" aria-hidden="true">X</div><div className="file-summary"><span className="section-label">考勤文件集</span><strong>{paths.length ? '已添加 ' + paths.length + ' 份报表' : '拖入多份 Excel，按时间合并统计'}</strong><small>{dragging ? '松开以追加文件' : '支持同一员工的多月 .xlsx · 保留原始文件'}</small></div>
       <div className="import-actions"><button className="secondary-button" disabled={loading || selecting} onClick={chooseInput}>{selecting ? '正在检查…' : '添加报表'}</button><button className="primary-button" disabled={!paths.length || loading || selecting || files.some(file => file.error)} onClick={calculate}>{loading && <span className="loading-spinner" />}{loading ? '统计并导出中…' : dirty ? '保存并重算' : result ? '重新统计' : '开始统计'}</button></div>
     </section>
-    {!!files.length && <section className="panel file-list" aria-label="报表文件列表">{files.map(file => { const source = result?.sources?.find(item => item.path === file.path); return <div className="file-entry" key={file.path}><div><strong title={file.path}>{file.path.split(/[\\/]/).pop()}</strong><small title={file.path}>{file.error || (source ? source.startDate + ' 至 ' + source.endDate + (source.duplicateOf ? ' · 内容重复，已去重' : source.cacheHit ? ' · 已复用解析缓存' : '') : '待解析')}</small></div><button className="text-button danger-text" disabled={loading || selecting} aria-label={'移除 ' + file.path.split(/[\\/]/).pop()} onClick={() => removeFile(file.path)}>移除</button></div>; })}</section>}
+    {!!files.length && <section className="panel file-list" aria-label="报表文件列表">{files.map(file => { const source = result?.sources?.find(item => matchesSourceInput(item, file.path)); return <div className="file-entry" key={file.path}><div><strong title={file.path}>{file.path.split(/[\\/]/).pop()}</strong><small title={file.path}>{file.error || (source ? source.startDate + ' 至 ' + source.endDate + (source.duplicateOf ? ' · 内容重复，已去重' : source.cacheHit ? ' · 已复用解析缓存' : '') : '待解析')}</small></div><button className="text-button danger-text" disabled={loading || selecting} aria-label={'移除 ' + file.path.split(/[\\/]/).pop()} onClick={() => removeFile(file.path)}>移除</button></div>; })}</section>}
     <div className="rules-bar"><span>标准 <strong>{compactMinutes(settings.calculation.standardMinutes)}</strong><i />考勤日 <strong>04:00—次日 03:59</strong><i />默认作息 <strong>{settings.calculation.workdayStart}—{settings.calculation.workdayEnd}</strong></span><button className="text-button" disabled={loading} onClick={() => setSettingsOpen(true)}>管理系统配置 →</button></div>
     {loading && <div className="progress-banner" role="status"><span>{progress?.message || '正在统计…'}{progress?.total ? ' (' + progress.current + '/' + progress.total + ')' : ''}</span><button className="secondary-button" onClick={cancel}>取消本次统计</button></div>}
     {notice && <div className="change-banner" role="status">{notice}</div>}
@@ -211,7 +215,7 @@ function App() {
       <div className="secondary-metrics"><button onClick={() => setActiveInsight("required")}>应计标准 <strong>{compactMinutes(result.summary.requiredStandardMinutes)}</strong></button><button onClick={() => setActiveInsight("effective")}>实际有效 <strong>{compactMinutes(result.summary.actualEffectiveMinutes)}</strong></button><span>原始文件未修改</span></div>
 
       {result.coverage?.missingDates.length > 0 && <div className="change-banner" role="status">有 {result.coverage.missingDates.length} 天未导入资料。汇总仅含已覆盖日期，不能视作完整期间。<button className="text-button" onClick={() => setFilter('missing')}>查看缺口</button></div>}
-      {!!result.conflicts?.filter(item => !item.resolved).length && <section className="panel conflict-panel" aria-label="来源冲突"><h3>选择冲突日期采用的来源</h3>{result.conflicts.filter(item => !item.resolved).map(conflict => <label key={conflict.workDate}>{conflict.workDate} · {conflict.reason}<select aria-label={conflict.workDate + '采用来源'} value={sourceChoices[conflict.workDate] || ''} onChange={event => { setSourceChoices(current => ({ ...current, [conflict.workDate]: event.target.value })); setChoicesChanged(true); }}><option value="">请选择，随后重新统计</option>{conflict.sourceIds.map(id => <option key={id} value={id}>{result.sources.find(source => source.id === id)?.name || id}</option>)}</select></label>)}</section>}
+      {!!result.conflicts?.length && <section className="panel conflict-panel" aria-label="来源冲突"><h3>来源版本选择</h3><p>已解决的冲突保留在此，可更换来源后重新统计。</p>{result.conflicts.map(conflict => <label key={conflict.workDate}>{conflict.workDate} · {conflict.resolved ? "已采用选定来源" : "待选择"} · {conflict.reason}<select aria-label={conflict.workDate + '采用来源'} value={sourceChoices[conflict.workDate] ?? conflict.selectedSourceId ?? ''} onChange={event => { setSourceChoices(current => ({ ...current, [conflict.workDate]: event.target.value })); setChoicesChanged(true); }}><option value="">请选择，随后重新统计</option>{conflict.sourceIds.map(id => <option key={id} value={id}>{sourceChoiceLabel(result.sources.find(source => source.id === id))}</option>)}</select></label>)}</section>}
       {result.monthlySummaries?.length > 1 && <details className="panel monthly-panel"><summary>按月汇总 · {result.monthlySummaries.length} 个月</summary><div className="table-scroll"><table><thead><tr><th>月份</th><th>标准工时</th><th>实际工时</th><th>加班</th><th>调休扣减</th><th>净剩</th></tr></thead><tbody>{result.monthlySummaries.map(month => <tr key={month.month}><td>{month.month}{month.isPartial && ' · 不完整'}</td><td>{compactMinutes(month.requiredStandardMinutes)}</td><td>{compactMinutes(month.actualEffectiveMinutes)}</td><td>{compactMinutes(month.extraMinutes)}</td><td>{compactMinutes(month.compensatoryLeaveMinutes, '待核对')}</td><td>{compactMinutes(month.netExtraMinutes, '待核对')}</td></tr>)}</tbody></table></div></details>}
       <section className="workspace-grid" id="daily-workspace">
         <div className="panel table-panel"><div className="panel-toolbar"><div><h3>每日明细</h3><span>{visibleDays.length} 天</span></div><button className={"secondary-button " + (editing ? "active" : "")} disabled={loading || sourceChanged} onClick={() => { if (editing) { setEditing(false); setDrafts({}); } else { setEditing(true); } }}>{editing ? "取消编辑" : "编辑考勤"}</button></div>

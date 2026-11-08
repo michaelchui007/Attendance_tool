@@ -32,6 +32,7 @@ export function validateOverride(value: DayOverride): string {
     if (!value.leaveReason?.trim()) return '请填写手动扣减原因。';
   }
   if (value.schedule) { const problem = validateSchedule(value.schedule); if (problem) return problem; }
+  if (value.resetTimes === true) return '';
   for (const timestamp of [value.firstCheckIn, value.lastCheckOut]) {
     if (!timestamp) continue;
     if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(timestamp)) return "请输入完整的日期和时间。";
@@ -43,9 +44,19 @@ export function validateOverride(value: DayOverride): string {
   return "";
 }
 
-/** 将原始时间转换为分钟输入值，恢复操作不修改原始记录。 */
-export function originalOverride(day: AttendanceDay): DayOverride {
-  return { workDate: day.workDate, firstCheckIn: day.originalFirstCheckIn?.slice(0, 16) || null, lastCheckOut: day.originalLastCheckOut?.slice(0, 16) || null };
+/** 恢复时间使用显式撤销标记，不把可能无效的原始时间伪装成新输入。 */
+export function restoreOriginalTimes(value: DayOverride): DayOverride {
+  const { firstCheckIn: _first, lastCheckOut: _last, ...remaining } = value;
+  return { ...remaining, resetTimes: true };
+}
+
+/** 按最终实际扣减拆分自动与人工构成，手动零值也保留明细。 */
+export function leaveBreakdown(days: AttendanceDay[]) {
+  const covered = days.filter(day => day.covered !== false);
+  const manualDays = covered.filter(day => day.isLeaveEdited);
+  const automaticDays = covered.filter(day => !day.isLeaveEdited);
+  const total = (items: AttendanceDay[]): number | null => items.some(day => day.compensatoryLeaveMinutes === null) ? null : items.reduce((sum, day) => sum + (day.compensatoryLeaveMinutes || 0), 0);
+  return { manualDays, manualMinutes: total(manualDays), automaticMinutes: total(automaticDays) };
 }
 
 /** 仅将需要用户处理的日期列为待处理，休息日无记录不制造告警。 */

@@ -19,13 +19,14 @@ export interface Schedule { workdayStart: string; workdayEnd: string; lunchStart
 export interface DateRule extends Schedule { id: string; name: string; startDate: string; endDate: string; }
 export interface CalculationSettings extends Schedule { standardMinutes: number; dateRules: DateRule[]; }
 export interface AppSettings { version: 1; calculation: CalculationSettings; outputRoot: string; }
-export interface SourceFile { id: string; path: string; name: string; startDate: string; endDate: string; duplicateOf?: string | null; cacheHit?: boolean; }
+export interface SourceFile { id: string; path: string; inputPath?: string; name: string; startDate: string; endDate: string; duplicateOf?: string | null; cacheHit?: boolean; }
 export interface SourceConflict { workDate: string; sourceIds: string[]; reason: string; resolved: boolean; selectedSourceId?: string | null; }
 export interface ProgressInfo { stage: string; message: string; current?: number; total?: number; }
 
 /** 本次文件会话内的每日首尾覆盖值，null 明确表示缺卡。 */
 export interface DayOverride {
   workDate: string;
+  resetTimes?: boolean;
   firstCheckIn?: string | null;
   lastCheckOut?: string | null;
   compensatoryLeaveMinutes?: number | null;

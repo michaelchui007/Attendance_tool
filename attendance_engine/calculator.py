@@ -128,7 +128,9 @@ def _parse_overrides(source: AttendanceSource, overrides: list[dict] | None) -> 
         if source.covered_dates is not None and work_date not in source.covered_dates:
             raise ValueError(f'{work_date} 尚未导入报表，不能应用修订')
         change = dict(item)
-        if 'firstCheckIn' in item or 'lastCheckOut' in item:
+        if 'resetTimes' in item and type(item['resetTimes']) is not bool:
+            raise ValueError('恢复原始时间标记须为布尔值')
+        if not item.get('resetTimes', False) and ('firstCheckIn' in item or 'lastCheckOut' in item):
             if not all(key in item for key in ('firstCheckIn', 'lastCheckOut')):
                 raise ValueError('修订打卡时须同时提供上下班字段，缺卡使用空值')
             times = []

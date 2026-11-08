@@ -207,6 +207,7 @@ def test_export_audits_standard_manual_and_source_data(tmp_path):
     assert wb['每日明细']['X2'].value == '公司统一调休'
     assert wb['来源清单']['B2'].value == path.name
     assert wb['分月汇总']['F2'].value == '-8小时00分钟'
+    assert report.days[0].source_ids == [source.files[0]['id']]
     wb.close()
     assert not list(output.parent.glob('.attendance-export-*'))
 
@@ -302,3 +303,46 @@ def test_changed_employee_cannot_receive_previous_manual_edits(tmp_path):
     with pytest.raises(ValueError, match='员工已改变'):
         cli.run_calculate(args)
     assert not (tmp_path / '输出').exists()
+
+
+def test_source_preserves_selected_symlink_path(tmp_path):
+    """返回原始选择路径及规范路径，界面可正确关联别名文件行。"""
+    day = date(2026, 11, 2)
+    actual = make_book(tmp_path, '实际报表.xlsx', day, day)
+    selected = tmp_path / '选择别名.xlsx'
+    try:
+        selected.symlink_to(actual)
+    except (OSError, NotImplementedError):
+        pytest.skip('当前系统未启用测试账号创建符号链接的权限')
+    source, _ = merge_workbooks([str(selected)])
+    assert source.files[0]['inputPath'] == str(selected)
+    assert source.files[0]['path'] == str(actual.resolve())
+    assert source.files[0]['id']
+
+
+def test_no_lunch_export_uses_whole_work_interval(tmp_path):
+    """无午休导出明确完整工作区间，不输出空时间拼接的字符串。"""
+    report = calculate(empty_source(), settings={'lunchStart': None, 'lunchEnd': None})
+    output = export_report(report, tmp_path)
+    workbook = load_workbook(output, data_only=True)
+    assert workbook['计算规则']['B6'].value == '09:00～18:30'
+    assert workbook['计算规则']['B7'].value == '无午休，按上述完整工作区间分摊'
+    workbook.close()
+
+
+def test_reset_times_restores_invalid_source_and_keeps_manual_deduction():
+    """恢复原始倒置打卡时不按新覆盖校验，独立人工扣减仍可保存。"""
+    work_date = date(2026, 11, 2)
+    source = empty_source(work_date, work_date)
+    source.records = [PunchRecord('测试员工', 'tester', datetime(2026, 11, 2, hour), work_date, kind, '')
+                      for hour, kind in [(10, PunchType.CHECK_IN), (9, PunchType.CHECK_OUT)]]
+    day = calculate(source, overrides=[{
+        'workDate': work_date.isoformat(), 'resetTimes': True,
+        'firstCheckIn': '2026-11-02T09:00', 'lastCheckOut': '2026-11-02T18:30',
+        'compensatoryLeaveMinutes': 480, 'leaveReason': '公司统一调休',
+    }]).days[0]
+    assert day.status is CalculationStatus.INVALID_TIME_RANGE
+    assert day.first_check_in == datetime(2026, 11, 2, 10)
+    assert day.last_check_out == datetime(2026, 11, 2, 9)
+    assert day.actual_effective_minutes is None
+    assert day.compensatory_leave_minutes == 480 and day.net_extra_minutes == -480

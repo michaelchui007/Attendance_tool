@@ -250,7 +250,8 @@ def export_report(report: AttendanceReport, export_root: str | Path | None = Non
     rules.append(["午休开始", report.rules.get("lunchStart", "12:00")])
     rules.append(["午休结束", report.rules.get("lunchEnd", "13:30")])
     rules.append(["请假分摊上午", f"{report.rules.get('workdayStart', '09:00')}～{report.rules.get('lunchStart') or report.rules.get('workdayEnd')}"])
-    rules.append(["请假分摊下午", f"{report.rules.get('lunchEnd', '13:30')}～{report.rules.get('workdayEnd', '18:30')}"])
+    rules.append(["请假分摊下午", "无午休，按上述完整工作区间分摊" if report.rules.get('lunchStart') is None else
+                  f"{report.rules.get('lunchEnd', '13:30')}～{report.rules.get('workdayEnd', '18:30')}"])
     rules.append(["标准工时（分钟）", report.rules.get('standardMinutes', 480)])
     rules.append(["地点福利", "已取消"])
     rules.append(["扣减规则", "完整打卡：自动扣减=min(当日申请量,max(标准工时-实际有效工时,0))；手动值优先"])

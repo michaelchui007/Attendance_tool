@@ -42,6 +42,7 @@ jobs:
           python -m pip install --no-build-isolation -e ".[dev]"
           python -m pytest
           if ($LASTEXITCODE -ne 0) { throw "Python tests failed." }
+          ./scripts/windows_build_retry_tests.ps1
           ./scripts/build_windows.ps1
           if ($LASTEXITCODE -ne 0) { throw "Windows build failed." }
           cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --lib

@@ -1,6 +1,6 @@
 import type { AttendanceResult } from "../types";
 import { formatMinutes } from "../formatters";
-import { needsAttention } from "../attendanceState";
+import { leaveBreakdown, needsAttention } from "../attendanceState";
 
 export type InsightKey = "required" | "effective" | "overtime" | "leave" | "net" | "abnormal" | "calendar";
 
@@ -69,6 +69,7 @@ export default function InsightDrawer({
     return sum + (day.extraMinutes || 0);
   }, 0);
   const abnormalDays = result.days.filter(needsAttention);
+  const deductions = leaveBreakdown(result.days);
 
   const requiredGroups = Array.from(
     workdays.reduce((groups, day) => {
@@ -166,9 +167,14 @@ export default function InsightDrawer({
 
           {active === "leave" && (
             <section className="insight-section">
-              <h3>已识别的调休申请</h3>
-              <p>以下保留源表申请原值。每日申请量按工作时段分摊，实际扣减另按剩余标准工时限制；点击查看当天明细。</p>
+              <h3>实际扣减构成</h3>
+              <p>人工值替代当日自动扣减，不重复叠加；点击日期可查看修订与原始依据。</p>
               <BreakdownRow label="实际扣减合计" value={result.summary.compensatoryLeaveMinutes === null ? "待核对" : formatMinutes(result.summary.compensatoryLeaveMinutes)} />
+              <BreakdownRow label="自动扣减" value={deductions.automaticMinutes === null ? "待核对" : formatMinutes(deductions.automaticMinutes)} />
+              <BreakdownRow label="手动扣减" value={deductions.manualMinutes === null ? "待核对" : formatMinutes(deductions.manualMinutes)} />
+              {!!deductions.manualDays.length && <div className="leave-record-list" aria-label="手动调休扣减明细">{deductions.manualDays.map(day => <button key={day.workDate} className="leave-record manual-leave-record" onClick={() => onSelectDay(day.workDate)}><div><span>{day.workDate} · 手动指定</span><strong>{day.compensatoryLeaveMinutes === null ? "待核对" : formatMinutes(day.compensatoryLeaveMinutes)}</strong></div><p>{day.leaveReason || "未记录原因"}</p><small>自动建议：{day.autoCompensatoryLeaveMinutes === null ? "待核对" : formatMinutes(day.autoCompensatoryLeaveMinutes)}</small></button>)}</div>}
+              <h3>原始调休申请</h3>
+              <p>以下保留源表填报原值，不能直接相加代替实际扣减。没有源申请的手动扣减列在上方。</p>
               {result.compensatoryLeaves.length ? (
                 <div className="leave-record-list">
                   {result.compensatoryLeaves.map((record, index) => (
