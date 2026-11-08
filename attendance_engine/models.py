@@ -29,6 +29,8 @@ class CalculationStatus(StrEnum):
     MISSING_CHECK_OUT = "缺少下班卡"
     MISSING_BOTH = "全天缺卡"
     INVALID_TIME_RANGE = "时间范围异常"
+    NOT_IMPORTED = "未导入"
+    SOURCE_CONFLICT = "来源冲突"
 
 
 @dataclass(slots=True)
@@ -41,6 +43,7 @@ class PunchRecord:
     location: str
     status: str = ""
     source_row: int = 0
+    sources: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -61,9 +64,10 @@ class CompensatoryLeaveRecord:
     end_at: datetime | None = None
     parse_warning: str = ""
     item_index: int = 0
+    sources: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "workDate": self.work_date.isoformat(),
             "minutes": self.minutes,
             "description": self.description,
@@ -74,6 +78,9 @@ class CompensatoryLeaveRecord:
             "parseWarning": self.parse_warning,
             "itemIndex": self.item_index,
         }
+        if self.sources:
+            data["sources"] = self.sources
+        return data
 
 
 @dataclass(slots=True)
@@ -85,6 +92,10 @@ class AttendanceSource:
     end_date: date
     records: list[PunchRecord]
     compensatory_leave_records: list[CompensatoryLeaveRecord] = field(default_factory=list)
+    files: list[dict[str, Any]] = field(default_factory=list)
+    covered_dates: set[date] | None = None
+    conflicts: list[dict[str, Any]] = field(default_factory=list)
+    source_choices: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -111,6 +122,13 @@ class DailyAttendanceResult:
     original_last_check_out: datetime | None = None
     is_edited: bool = False
     requires_review: bool = False
+    covered: bool = True
+    source_ids: list[str] = field(default_factory=list)
+    schedule: dict[str, Any] = field(default_factory=dict)
+    schedule_source: str = "默认规则"
+    auto_compensatory_leave_minutes: int | None = 0
+    is_leave_edited: bool = False
+    leave_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -137,6 +155,13 @@ class DailyAttendanceResult:
             "originalLastCheckOut": self.original_last_check_out.isoformat(timespec="minutes") if self.original_last_check_out else None,
             "isEdited": self.is_edited,
             "requiresReview": self.requires_review,
+            "covered": self.covered,
+            "sourceIds": self.source_ids,
+            "schedule": self.schedule,
+            "scheduleSource": self.schedule_source,
+            "autoCompensatoryLeaveMinutes": self.auto_compensatory_leave_minutes,
+            "isLeaveEdited": self.is_leave_edited,
+            "leaveReason": self.leave_reason,
         }
 
 
@@ -162,7 +187,7 @@ class AttendanceReport:
 
     @property
     def compensatory_leave_minutes(self) -> int | None:
-        if any(day.compensatory_leave_minutes is None for day in self.days):
+        if any(day.compensatory_leave_minutes is None for day in self.days if day.covered):
             return None
         return sum(day.compensatory_leave_minutes or 0 for day in self.days)
 
@@ -174,13 +199,34 @@ class AttendanceReport:
     @property
     def leave_requested_minutes(self) -> int | None:
         """汇总已分摊的申请量，任何未知日量均保持待核对。"""
-        if any(day.leave_requested_minutes is None for day in self.days):
+        if any(day.leave_requested_minutes is None for day in self.days if day.covered):
             return None
         return sum(day.leave_requested_minutes or 0 for day in self.days)
 
     @property
     def abnormal_day_count(self) -> int:
-        return sum(day.status is not CalculationStatus.SUCCESS or day.requires_review for day in self.days)
+        return sum(day.covered and (day.status is not CalculationStatus.SUCCESS or day.requires_review) for day in self.days)
+
+    def summary(self) -> dict[str, Any]:
+        """汇总已覆盖日期，缺失月份显式标记而非当作零出勤。"""
+        return {
+            "requiredStandardMinutes": self.required_standard_minutes,
+            "actualEffectiveMinutes": self.actual_effective_minutes,
+            "extraMinutes": self.extra_minutes,
+            "compensatoryLeaveMinutes": self.compensatory_leave_minutes,
+            "netExtraMinutes": self.net_extra_minutes,
+            "normalDayCount": sum(day.covered for day in self.days) - self.abnormal_day_count,
+            "abnormalDayCount": self.abnormal_day_count,
+            "leaveRequestedMinutes": self.leave_requested_minutes,
+            "requiresReview": any(day.requires_review for day in self.days if day.covered),
+            "isPartial": any(not day.covered for day in self.days),
+        }
+
+    def monthly_summaries(self) -> list[dict[str, Any]]:
+        """复用相同汇总口径生成逐月小计，保留缺口月份。"""
+        months = sorted({day.work_date.strftime('%Y-%m') for day in self.days})
+        return [{"month": month, **AttendanceReport(self.source, [day for day in self.days
+                 if day.work_date.strftime('%Y-%m') == month]).summary()} for month in months]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -193,17 +239,7 @@ class AttendanceReport:
                 "startDate": self.source.start_date.isoformat(),
                 "endDate": self.source.end_date.isoformat(),
             },
-            "summary": {
-                "requiredStandardMinutes": self.required_standard_minutes,
-                "actualEffectiveMinutes": self.actual_effective_minutes,
-                "extraMinutes": self.extra_minutes,
-                "compensatoryLeaveMinutes": self.compensatory_leave_minutes,
-                "netExtraMinutes": self.net_extra_minutes,
-                "normalDayCount": len(self.days) - self.abnormal_day_count,
-                "abnormalDayCount": self.abnormal_day_count,
-                "leaveRequestedMinutes": self.leave_requested_minutes,
-                "requiresReview": any(day.requires_review for day in self.days),
-            },
+            "summary": self.summary(),
             "days": [day.to_dict() for day in self.days],
             "compensatoryLeaves": [
                 record.to_dict() for record in self.source.compensatory_leave_records
@@ -211,4 +247,10 @@ class AttendanceReport:
             "calendar": self.calendar_info,
             "rules": self.rules,
             "outputPath": str(self.output_path) if self.output_path else None,
+            "sources": self.source.files,
+            "conflicts": self.source.conflicts,
+            "exportBlocked": any(not item['resolved'] for item in self.source.conflicts),
+            "coverage": {"missingDates": [day.work_date.isoformat() for day in self.days if not day.covered],
+                         "coveredDayCount": sum(day.covered for day in self.days)},
+            "monthlySummaries": self.monthly_summaries(),
         }

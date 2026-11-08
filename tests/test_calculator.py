@@ -164,8 +164,8 @@ def test_manual_override_allows_next_day_0359():
     assert day.actual_effective_minutes == 1049
 
 
-def test_lunch_configuration_changes_work_and_leave_schedule_together():
-    """一小时午休同步调整实际工时扣除及八小时请假分摊时段。"""
+def test_lunch_configuration_changes_overlap_without_moving_workday_end():
+    """午休影响实际交集与请假分摊，不再自动移动正常下班时间。"""
     attendance = source([record(1, 9, 0, PunchType.CHECK_IN), record(1, 18, 0, PunchType.CHECK_OUT)], date(2026, 7, 1), date(2026, 7, 1))
     attendance.compensatory_leave_records.append(CompensatoryLeaveRecord(
         date(2026, 7, 1), 60, "调休假1小时", "测试",
@@ -179,7 +179,8 @@ def test_lunch_configuration_changes_work_and_leave_schedule_together():
     assert new.days[0].leave_requested_minutes == 60
     assert new.days[0].compensatory_leave_minutes == 0
     assert new.days[0].requires_review
-    assert new.rules["workdayEnd"] == "18:00"
+    assert new.rules["workdayEnd"] == "18:30"
+    assert new.rules["standardMinutes"] == 480
 
 
 def test_unknown_cross_day_leave_does_not_become_zero_balance():

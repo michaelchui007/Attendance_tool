@@ -9,7 +9,7 @@ interface HelpDrawerProps {
 }
 
 const sectionMeta: Array<{ key: HelpSection; index: string; title: string; summary: string }> = [
-  { key: "quick", index: "01", title: "快速开始", summary: "选择文件、统计并查看结果" },
+  { key: "quick", index: "01", title: "快速开始", summary: "添加多份报表、核对并导出" },
   { key: "results", index: "02", title: "结果怎么看", summary: "了解六项汇总数据" },
   { key: "rules", index: "03", title: "计算规则", summary: "工作日、午休、加班与调休" },
   { key: "faq", index: "04", title: "常见问题", summary: "快速排查容易疑惑的结果" },
@@ -32,9 +32,9 @@ function QuickHelp() {
         ))}
       </div>
       <ul className="help-list">
-        <li>浏览选择或拖入员工个人导出的 <strong>.xlsx</strong> 考勤报表。</li>
+        <li>批量选择或拖入同一员工导出的 <strong>.xlsx</strong> 考勤报表。</li>
         <li>输出目录可不选，默认在源文件旁创建 <strong>export_report</strong>。</li>
-        <li>点击“开始统计”，完成后可查看汇总、每日明细和导出 Excel。</li>
+        <li>点击“开始统计”，完成后可查看汇总、每日明细和导出 Excel。来源冲突须先选择采用版本。</li><li>“系统配置”可独立设置标准工时、作息与日期段；保存后重新统计生效。</li><li>“编辑考勤”支持打卡、手动扣减及单日作息；扣减 8 或 −8 均表示减少 8 小时余额，需填写原因。</li><li>修订仅保留当前会话；源表不变，导出保留修订与来源。</li>
         <li>考勤文件仅在本机处理；联网仅用于更新节假日安排。</li>
       </ul>
     </div>
@@ -43,9 +43,9 @@ function QuickHelp() {
 
 function ResultHelp() {
   const items = [
-    ["standard", "应计标准工时", "工作日每天 8 小时，实际休息日为 0；国家调休上班的周末仍计入。"],
+    ["standard", "应计标准工时", "工作日按系统设置的标准工时累计，默认 8 小时；休息日为 0，未导入日期不计入。"],
     ["effective", "实际有效工时", "完整上下班跨度扣除工作日午休后的时间。"],
-    ["overtime", "加班时长", "工作日超过 8 小时及休息日打卡的合计，不计地点福利。"],
+    ["overtime", "加班时长", "工作日超过所配标准工时及休息日打卡的合计，不计地点福利。"],
     ["leave", "实际调休扣减", "按请假区间分摊，完整打卡时不超过当天剩余标准工时。"],
     ["net", "净剩加班", "加班减去实际调休扣减；申请不明时显示待核对。"],
     ["warning", "异常日期", "缺少打卡或上下班时间不合理的日期。"],
@@ -71,19 +71,19 @@ function RuleHelp() {
           <span>上下班跨度</span><i>−</i><span>午休重叠</span><i>=</i><strong>实际有效</strong>
         </div>
         <div className="help-formula-flow compact">
-          <span>实际有效</span><i>−</i><span>8小时</span><i>=</i><strong>加班（最低0）</strong>
+          <span>实际有效</span><i>−</i><span>所配标准</span><i>=</i><strong>加班（最低0）</strong>
         </div>
       </div>
       <div className="help-rule-grid">
         <div className="help-rule-card"><strong>午休</strong><p>工作日扣除与所选午休区间的实际交集，默认 12:00–13:30。</p></div>
-        <div className="help-rule-card"><strong>调休申请</strong><p>默认按 09:00–12:00、13:30–18:30 分摊，午休和休息日不计入。</p></div>
+        <div className="help-rule-card"><strong>调休申请</strong><p>按当天生效作息分摊，午休和休息日不计入；日期段与单日可独立配置。</p></div>
         <div className="help-rule-card"><strong>周末和节假日</strong><p>不扣午休、不享受地点福利，打卡跨度全部计入加班。</p></div>
         <div className="help-rule-card"><strong>多次打卡</strong><p>取最早上班和最晚下班；04:00 前的打卡归入前一天。</p></div>
       </div>
       <div className="help-net-formula">
         <span>加班时长</span><b>−</b><span>实际调休扣减</span><b>=</b><strong>净剩加班</strong>
       </div>
-      <p className="help-callout">缺卡工作日仍计入 8 小时标准工时，但实际有效和加班显示“未计算”；可确认的当日调休仍参与扣减，申请信息不足时显示“待核对”。</p>
+      <p className="help-callout">缺卡工作日仍计入所配标准工时，但实际有效和加班显示“未计算”；可确认的当日调休仍参与扣减，申请信息不足时显示“待核对”。</p>
     </div>
   );
 }
@@ -93,11 +93,11 @@ function FaqHelp() {
     <div className="help-section-body help-faq">
       <details>
         <summary>为什么申请 5 小时，实际只扣 4 小时？</summary>
-        <p>若当天已经实际工作 4 小时，距离 8 小时标准只差 4 小时，因此最多扣 4 小时调休。原始申请仍保留，可在每日详情中查看。</p>
+        <p>按默认 8 小时标准，若当天实际工作 4 小时，则只差 4 小时，因此最多扣 4 小时调休。原始申请仍保留，可在每日详情中查看。</p>
       </details>
       <details>
-        <summary>为什么缺卡当天仍有 8 小时标准工时？</summary>
-        <p>标准工时由日期类型决定。只要当天是工作日，就会计入 8 小时，与是否打卡无关。</p>
+        <summary>为什么缺卡当天仍有标准工时？</summary>
+        <p>只要报表覆盖当天且为工作日，就会计入系统配置的标准工时；缺卡不等于免除标准工时。</p>
       </details>
       <details>
         <summary>为什么净剩加班会是负数？</summary>

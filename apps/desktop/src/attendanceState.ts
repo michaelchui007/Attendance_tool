@@ -1,4 +1,5 @@
 import type { AttendanceDay, DayOverride } from "./types";
+import { validateSchedule } from './settings';
 
 /** 返回适合表格的分钟文本；未知扣减明确展示为待核对。 */
 export function compactMinutes(value: number | null, unknown = "未计算"): string {
@@ -26,6 +27,11 @@ export function workDateFor(timestamp: string): string {
  *   错误说明；通过校验时返回空字符串。
  */
 export function validateOverride(value: DayOverride): string {
+  if (value.compensatoryLeaveMinutes !== undefined && value.compensatoryLeaveMinutes !== null) {
+    if (!Number.isInteger(value.compensatoryLeaveMinutes) || value.compensatoryLeaveMinutes < 0 || value.compensatoryLeaveMinutes > 1440) return '调休扣减须为 0～24 小时，并精确到分钟。';
+    if (!value.leaveReason?.trim()) return '请填写手动扣减原因。';
+  }
+  if (value.schedule) { const problem = validateSchedule(value.schedule); if (problem) return problem; }
   for (const timestamp of [value.firstCheckIn, value.lastCheckOut]) {
     if (!timestamp) continue;
     if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(timestamp)) return "请输入完整的日期和时间。";
@@ -44,5 +50,6 @@ export function originalOverride(day: AttendanceDay): DayOverride {
 
 /** 仅将需要用户处理的日期列为待处理，休息日无记录不制造告警。 */
 export function needsAttention(day: AttendanceDay): boolean {
+  if (day.covered === false) return false;
   return day.requiresReview || (day.status !== "正常" && (day.requiredStandardMinutes > 0 || day.records.length > 0 || Boolean(day.firstCheckIn || day.lastCheckOut)));
 }

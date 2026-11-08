@@ -330,3 +330,48 @@ button:focus-visible, summary:focus-visible, tr:focus-visible { outline: 3px sol
 .help-metric p, .help-rule-card p, .help-faq p, .help-callout, .leave-record p, .insight-section > p { font-size: 12px; line-height: 1.75; }
 .help-rule-card strong, .help-faq summary, .breakdown-row strong, .leave-record strong { font-size: 12px; }
 .insight-date-title, .insight-date-row strong, .breakdown-row small { font-size: 11px; }
+
+/* 系统配置与批量工作流沿用工作台的间距、边框和文字层级。 */
+.settings-page { max-width: 1100px; margin: 20px auto; }
+.settings-heading, .section-actions, .settings-footer, .progress-banner { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.settings-heading h2 { margin: 7px 0; font-size: 26px; }
+.settings-heading p, .configuration-section > p, .section-actions p { color: #687b94; font-size: 13px; line-height: 1.7; }
+.configuration-section { padding: 24px; margin: 18px 0; }
+.configuration-section h3 { margin: 0 0 10px; font-size: 16px; }
+.configuration-grid { display: flex; flex-wrap: wrap; gap: 14px; align-items: end; }
+.configuration-grid label, .standard-input, .deduction-editor label, .conflict-panel label { display: grid; gap: 7px; color: #52657f; font-size: 12px; }
+.configuration-grid label { flex: 1 1 150px; }
+.configuration-grid input, .standard-input input, .deduction-editor input, select { min-width: 0; width: 100%; padding: 10px; border: 1px solid #cdd8e6; background: #fff; border-radius: 7px; font: inherit; color: #223b5b; }
+.standard-input { max-width: 230px; margin: 16px 0; }
+.schedule-fields, .deduction-editor, .day-schedule-editor, .time-editor { border: 0; padding: 0; min-width: 0; margin: 15px 0; }
+.schedule-fields legend, .deduction-editor legend, .day-schedule-editor legend, .time-editor legend { color: #344e6e; font-weight: 600; font-size: 13px; margin-bottom: 12px; }
+.checkbox-field { display: flex !important; align-items: center; gap: 7px; padding: 8px 0; }
+.checkbox-field input { width: 16px; height: 16px; }
+.schedule-summary { display: flex; gap: 20px; align-items: center; margin-top: 16px; font-size: 13px; color: #60758f; }
+.schedule-summary strong { margin-left: 7px; color: #213a5c; }
+.date-rule { padding: 18px; margin-top: 14px; border: 1px solid #dae2ed; border-radius: 10px; background: #f8fafd; }
+.settings-footer { position: sticky; bottom: 0; padding: 17px; border: 1px solid #d8e1ee; border-radius: 10px; background: #fff; box-shadow: 0 -4px 18px #233d6010; z-index: 2; }
+.settings-footer > span { flex: 1; font-size: 12px; color: #6e8098; }
+.file-list { margin-top: 10px; padding: 5px 18px; }
+.file-entry { display: flex; align-items: center; gap: 16px; padding: 10px 0; border-bottom: 1px solid #edf0f5; }
+.file-entry:last-child { border-bottom: 0; }
+.file-entry > div { min-width: 0; flex: 1; }
+.file-entry strong { display: block; font-size: 12px; color: #314b6e; overflow-wrap: anywhere; }
+.file-entry small { display: block; margin-top: 4px; color: #72839a; font-size: 11px; overflow-wrap: anywhere; }
+.danger-text { color: #a54836 !important; }
+.progress-banner { padding: 14px 18px; margin: 12px 0; background: #edf4ff; border: 1px solid #d1dff8; border-radius: 10px; font-size: 13px; }
+.conflict-panel { margin: 16px 0; padding: 20px; border-color: #e3be90; }
+.conflict-panel h3 { margin-top: 0; font-size: 15px; }
+.conflict-panel label { margin-top: 14px; }
+.monthly-panel { margin: 14px 0; overflow: hidden; }
+.monthly-panel > summary { padding: 16px 20px; cursor: pointer; color: #385575; font-size: 13px; font-weight: 600; }
+.day-editor { font-size: 12px; }
+.day-editor fieldset + fieldset { border-top: 1px solid #e0e7ef; padding-top: 15px; }
+.day-editor p, .day-editor small { font-size: 11px; line-height: 1.7; color: #697f9b; }
+.deduction-editor label { margin: 12px 0; }
+.deduction-preview { background: #edf4ff; border-radius: 7px; padding: 9px; color: #3159a7 !important; }
+.day-rule-note { margin: 14px 0; padding: 12px; border-radius: 8px; background: #f4f7fc; font-size: 11px; color: #5b7394; }
+.day-rule-note p { line-height: 1.8; margin: 5px 0 0; }
+.table-filter { overflow-x: auto; }
+.source-content small { overflow-wrap: anywhere; }
+@media (max-width: 760px) { .settings-heading, .section-actions, .settings-footer { flex-wrap: wrap; } .configuration-section { padding: 17px; } .settings-footer > span { flex-basis: 100%; } .header-actions { flex-wrap: wrap; } .schedule-summary { flex-wrap: wrap; } }

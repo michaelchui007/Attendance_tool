@@ -8,13 +8,29 @@ export interface LeaveRecord {
   startAt: string | null;
   endAt: string | null;
   parseWarning: string;
+  sourceFile?: string;
+  sourceId?: string;
+  sources?: RecordSource[];
 }
+export interface RecordSource { sourceId: string; path: string; name: string; sourceSheet: string; sourceRow: number; }
+
+/** 正常时段与标准工时相互独立；null 午休表示无午休。 */
+export interface Schedule { workdayStart: string; workdayEnd: string; lunchStart: string | null; lunchEnd: string | null; }
+export interface DateRule extends Schedule { id: string; name: string; startDate: string; endDate: string; }
+export interface CalculationSettings extends Schedule { standardMinutes: number; dateRules: DateRule[]; }
+export interface AppSettings { version: 1; calculation: CalculationSettings; outputRoot: string; }
+export interface SourceFile { id: string; path: string; name: string; startDate: string; endDate: string; duplicateOf?: string | null; cacheHit?: boolean; }
+export interface SourceConflict { workDate: string; sourceIds: string[]; reason: string; resolved: boolean; selectedSourceId?: string | null; }
+export interface ProgressInfo { stage: string; message: string; current?: number; total?: number; }
 
 /** 本次文件会话内的每日首尾覆盖值，null 明确表示缺卡。 */
 export interface DayOverride {
   workDate: string;
-  firstCheckIn: string | null;
-  lastCheckOut: string | null;
+  firstCheckIn?: string | null;
+  lastCheckOut?: string | null;
+  compensatoryLeaveMinutes?: number | null;
+  leaveReason?: string;
+  schedule?: Schedule | null;
 }
 
 export interface AttendanceDay {
@@ -34,6 +50,13 @@ export interface AttendanceDay {
   originalLastCheckOut: string | null;
   isEdited: boolean;
   requiresReview: boolean;
+  covered: boolean;
+  sourceIds: string[];
+  schedule: Schedule & { standardMinutes: number; netScheduleMinutes: number };
+  scheduleSource: string;
+  autoCompensatoryLeaveMinutes: number | null;
+  isLeaveEdited: boolean;
+  leaveReason: string;
   rawDurationMinutes: number | null;
   lunchDeductionMinutes: number;
   locationBenefitMinutes: number;
@@ -45,6 +68,10 @@ export interface AttendanceDay {
     punch_type: string;
     location: string;
     status: string;
+    source_file?: string;
+    source_sheet?: string;
+    source_row?: number;
+    sources?: RecordSource[];
   }>;
 }
 
@@ -62,16 +89,12 @@ export interface AttendanceResult {
     requiresReview: boolean;
     normalDayCount: number;
     abnormalDayCount: number;
+    isPartial?: boolean;
   };
   days: AttendanceDay[];
   compensatoryLeaves: LeaveRecord[];
-  rules: {
-    lunchStart: string;
-    lunchEnd: string;
-    workdayStart: string;
-    workdayEnd: string;
+  rules: CalculationSettings & {
     dayBoundary: string;
-    standardMinutes: number;
     locationBenefitEnabled: false;
   };
   calendar: {
@@ -84,7 +107,13 @@ export interface AttendanceResult {
     }>;
     warnings: string[];
   };
-  outputPath: string;
+  outputPath: string | null;
+  exportBlocked?: boolean;
+  sources: SourceFile[];
+  conflicts: SourceConflict[];
+  coverage: { missingDates: string[]; coveredDayCount: number };
+  monthlySummaries: Array<AttendanceResult["summary"] & { month: string }>;
+  timings?: Record<string, number>;
 }
 
 export interface NativePathSelection {

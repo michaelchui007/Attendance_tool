@@ -9,6 +9,7 @@ from .models import (
     DailyAttendanceResult, PunchRecord, PunchType,
 )
 from .parser import _resolve_work_date
+from .schedules import normalize_settings, schedule_for_day, minute_value, validate_schedule
 
 STANDARD_MINUTES = 8 * 60
 LUNCH_START = time(12, 0)
@@ -28,46 +29,12 @@ def _minutes_between(start: datetime, end: datetime) -> int:
     return max(0, int((end - start).total_seconds() // 60))
 
 
-def _parse_schedule(lunch_start: str | None, lunch_end: str | None) -> dict:
-    """校验单段午休并推导保持八小时标准的下午结束时间。
-
-    Args:
-        lunch_start: HH:mm 格式的午休开始时间，省略时使用 12:00。
-        lunch_end: HH:mm 格式的午休结束时间，省略时使用 13:30。
-
-    Returns:
-        可供界面、计算和导出共同使用的规则快照。
-
-    Raises:
-        ValueError: 午休格式非法或不能构成同日八小时工作安排。
-    """
-    values = [lunch_start if lunch_start is not None else '12:00', lunch_end if lunch_end is not None else '13:30']
-    parsed = []
-    for value in values:
-        if not isinstance(value, str) or len(value) != 5:
-            raise ValueError('午休时间必须为 HH:mm 格式')
-        try:
-            parsed.append(datetime.strptime(value, '%H:%M').time())
-        except ValueError as exc:
-            raise ValueError('午休时间必须为 HH:mm 格式') from exc
-    start, end = parsed
-    start_minutes = start.hour * 60 + start.minute
-    end_minutes = end.hour * 60 + end.minute
-    work_end = 9 * 60 + STANDARD_MINUTES + end_minutes - start_minutes
-    if not (9 * 60 < start_minutes < 17 * 60 and start_minutes < end_minutes and work_end < 24 * 60):
-        raise ValueError('午休须在 09:00 之后、上午工作不足 8 小时，且结束晚于开始、当日可完成 8 小时工作')
-    return {
-        'lunchStart': start.strftime('%H:%M'), 'lunchEnd': end.strftime('%H:%M'),
-        'workdayStart': '09:00', 'workdayEnd': f'{work_end // 60:02d}:{work_end % 60:02d}',
-        'dayBoundary': '04:00', 'standardMinutes': STANDARD_MINUTES, 'locationBenefitEnabled': False,
-    }
-
-
 def _schedule_intervals(work_date: date, rules: dict) -> list[tuple[datetime, datetime]]:
-    """返回请假可计入的上午、下午工作区间。"""
-    values = [datetime.combine(work_date, time.fromisoformat(rules[key]))
-              for key in ('workdayStart', 'lunchStart', 'lunchEnd', 'workdayEnd')]
-    return [(values[0], values[1]), (values[2], values[3])]
+    """返回请假可计入的正常工作区间，显式无午休时保留完整区间。"""
+    stamp = lambda key: datetime.combine(work_date, time.fromisoformat(rules[key]))
+    if rules['lunchStart'] is None:
+        return [(stamp('workdayStart'), stamp('workdayEnd'))]
+    return [(stamp('workdayStart'), stamp('lunchStart')), (stamp('lunchEnd'), stamp('workdayEnd'))]
 
 
 def _merge_minutes(intervals: list[tuple[datetime, datetime]]) -> int:
@@ -108,6 +75,9 @@ def _leave_for_day(
             applies = True
         if not applies:
             continue
+        chosen = source.source_choices.get(work_date.isoformat())
+        if chosen and record.sources and not any(item["sourceId"] == chosen for item in record.sources):
+            continue
         key = (record.start_at, record.end_at) if has_interval else (record.work_date, record.description, record.item_index)
         if key in seen:
             continue
@@ -140,71 +110,94 @@ def _leave_for_day(
 
 
 def _parse_overrides(source: AttendanceSource, overrides: list[dict] | None) -> dict:
-    """校验会话内首尾修订，拒绝跨考勤日移动及带时区的输入。"""
+    """独立校验打卡、扣减和单日作息修订，允许只指定其中一项。"""
     if overrides is None:
         return {}
     if not isinstance(overrides, list):
-        raise ValueError('时间修订必须为列表')
+        raise ValueError('考勤修订必须为列表')
     result = {}
     for item in overrides:
         if not isinstance(item, dict):
-            raise ValueError('时间修订必须包含日期及上下班时间')
+            raise ValueError('考勤修订必须为对象')
         try:
             work_date = date.fromisoformat(item['workDate'])
         except (ValueError, TypeError, KeyError) as exc:
-            raise ValueError('时间修订缺少有效工作日期') from exc
+            raise ValueError('考勤修订缺少有效日期') from exc
         if not source.start_date <= work_date <= source.end_date or work_date in result:
             raise ValueError('修订日期超出统计期间或重复')
-        times = []
-        for key in ('firstCheckIn', 'lastCheckOut'):
-            if key not in item:
-                raise ValueError('时间修订须同时提供上下班字段，缺卡时使用空值')
-            value = item[key]
-            try:
-                stamp = datetime.fromisoformat(value) if isinstance(value, str) else None
-            except ValueError as exc:
-                raise ValueError('修订时间格式无效') from exc
-            if value is not None and stamp is None:
-                raise ValueError('修订时间必须为日期时间字符串或空值')
-            if stamp is not None and (stamp.tzinfo is not None or stamp.second or stamp.microsecond or _resolve_work_date(stamp) != work_date):
-                raise ValueError('修订时间须精确到分钟，且属于当天 04:00 至次日 04:00 前')
-            times.append(stamp)
-        if all(times) and times[1] <= times[0]:
-            raise ValueError('下班时间必须晚于上班时间')
-        result[work_date] = tuple(times)
+        if source.covered_dates is not None and work_date not in source.covered_dates:
+            raise ValueError(f'{work_date} 尚未导入报表，不能应用修订')
+        change = dict(item)
+        if 'firstCheckIn' in item or 'lastCheckOut' in item:
+            if not all(key in item for key in ('firstCheckIn', 'lastCheckOut')):
+                raise ValueError('修订打卡时须同时提供上下班字段，缺卡使用空值')
+            times = []
+            for key in ('firstCheckIn', 'lastCheckOut'):
+                value = item[key]
+                try:
+                    stamp = datetime.fromisoformat(value) if isinstance(value, str) else None
+                except ValueError as exc:
+                    raise ValueError('修订时间格式无效') from exc
+                if value is not None and stamp is None:
+                    raise ValueError('修订时间必须为日期时间字符串或空值')
+                if stamp is not None and (stamp.tzinfo is not None or stamp.second or stamp.microsecond or _resolve_work_date(stamp) != work_date):
+                    raise ValueError('修订时间须精确到分钟，且属于当天04:00至次日04:00前')
+                times.append(stamp)
+            if all(times) and times[1] <= times[0]:
+                raise ValueError('下班时间必须晚于上班时间')
+            change['times'] = tuple(times)
+        manual = item.get('compensatoryLeaveMinutes')
+        if manual is not None:
+            minute_value(manual, '手动调休扣减', allow_zero=True)
+            reason = item.get('leaveReason')
+            if not isinstance(reason, str) or not reason.strip():
+                raise ValueError('手动调休扣减须填写修订原因')
+            change['leaveReason'] = reason.strip()
+        if item.get('schedule') is not None:
+            change['schedule'] = validate_schedule(item['schedule'])
+        result[work_date] = change
     return result
 
 
 def calculate_attendance(
     source: AttendanceSource, holiday_calendar: HolidayCalendar | None = None,
     *, overrides: list[dict] | None = None, lunch_start: str | None = None, lunch_end: str | None = None,
+    settings: dict | None = None,
 ) -> AttendanceReport:
-    """根据日历、请假区间和已确认规则生成可追溯的考勤统计。
+    """按有效来源、独立标准及当日规则计算，不修改原始资料。
 
     Args:
-        source: 源报表，函数不会修改其中的原始记录。
-        holiday_calendar: 已加载的节假日日历，省略时使用内置分类。
-        overrides: 当前会话按日期提供的上下班首尾覆盖值。
-        lunch_start: 午休开始 HH:mm。
-        lunch_end: 午休结束 HH:mm。
+        source: 已解析或合并的源记录。
+        holiday_calendar: 注入的工作日历。
+        overrides: 每日打卡、手动扣减或作息覆盖。
+        lunch_start: 旧协议午休开始。
+        lunch_end: 旧协议午休结束。
+        settings: 系统标准、默认作息及日期段规则。
 
     Returns:
-        同时包含原始资料、日结果、规则及汇总的统计报告。
+        含日结果、自动值、修订审计和来源的完整报告。
     """
-    rules = _parse_schedule(lunch_start, lunch_end)
+    rules = normalize_settings(settings, lunch_start, lunch_end)
     changes = _parse_overrides(source, overrides)
     grouped: dict[date, list[PunchRecord]] = defaultdict(list)
     for record in source.records:
         if source.start_date <= record.work_date <= source.end_date:
-            grouped[record.work_date].append(record)
+            chosen = source.source_choices.get(record.work_date.isoformat())
+            if not chosen or not record.sources or any(item['sourceId'] == chosen for item in record.sources):
+                grouped[record.work_date].append(record)
+    unresolved = {item['workDate'] for item in source.conflicts if not item['resolved']}
     results = []
     for work_date in _date_range(source.start_date, source.end_date):
+        change = changes.get(work_date, {})
+        schedule, schedule_source = schedule_for_day(rules, work_date, change.get('schedule'))
+        standard = rules['standardMinutes']
         records = sorted(grouped.get(work_date, []), key=lambda item: item.timestamp)
         day_type = holiday_calendar.classify_day(work_date) if holiday_calendar is not None else classify_day(work_date)
-        requested, leave_records, messages = _leave_for_day(source, work_date, day_type.is_workday, rules)
+        covered = source.covered_dates is None or work_date in source.covered_dates
+        requested, leave_records, messages = _leave_for_day(source, work_date, day_type.is_workday, schedule)
         original_start = min((item.timestamp for item in records if item.punch_type is PunchType.CHECK_IN), default=None)
         original_end = max((item.timestamp for item in records if item.punch_type is PunchType.CHECK_OUT), default=None)
-        first, last = changes.get(work_date, (original_start, original_end))
+        first, last = change.get('times', (original_start, original_end))
         status = CalculationStatus.SUCCESS
         if first is None and last is None:
             status = CalculationStatus.MISSING_BOTH
@@ -214,46 +207,76 @@ def calculate_attendance(
             status = CalculationStatus.MISSING_CHECK_OUT
         elif last <= first:
             status = CalculationStatus.INVALID_TIME_RANGE
+        if not covered:
+            status = CalculationStatus.NOT_IMPORTED
+        elif work_date.isoformat() in unresolved:
+            status = CalculationStatus.SOURCE_CONFLICT
+        selected_source = source.source_choices.get(work_date.isoformat())
+        source_ids = sorted({entry['sourceId'] for record in [*records, *leave_records] for entry in record.sources
+                             if not selected_source or entry['sourceId'] == selected_source}
+                            | {item['id'] for item in source.files if not item['duplicateOf']
+                               and item['startDate'] <= work_date.isoformat() <= item['endDate']
+                               and (not selected_source or item['id'] == selected_source)})
         day = DailyAttendanceResult(
-            work_date=work_date, day_type=day_type, status=status,
-            required_standard_minutes=STANDARD_MINUTES if day_type.is_workday else 0,
+            work_date=work_date, day_type=day_type, status=status, covered=covered, source_ids=source_ids,
+            required_standard_minutes=standard if covered and day_type.is_workday else 0,
             actual_regular_minutes=None, actual_effective_minutes=None, extra_minutes=None,
             compensatory_leave_minutes=requested, net_extra_minutes=-requested if requested is not None else None,
             first_check_in=first, last_check_out=last, records=records, messages=messages,
             leave_requested_minutes=requested, leave_records=leave_records,
             original_first_check_in=original_start, original_last_check_out=original_end,
-            is_edited=work_date in changes and (first, last) != (original_start, original_end),
+            is_edited=(first, last) != (original_start, original_end),
             requires_review=requested is None or any(record.parse_warning or record.start_at is None for record in leave_records),
+            schedule=schedule, schedule_source=schedule_source,
         )
+        if not covered or status is CalculationStatus.SOURCE_CONFLICT:
+            day.leave_requested_minutes = day.compensatory_leave_minutes = day.net_extra_minutes = None
+            day.auto_compensatory_leave_minutes = None
+            day.requires_review = covered
+            day.messages = ['日期尚未导入，不计入已覆盖期间汇总'] if not covered else ['来源记录冲突，请先选择当天采用的报表版本']
+            results.append(day)
+            continue
         if day.is_edited:
             messages.append('已使用手动修订的上下班时间，原始打卡记录保留')
-        if status is not CalculationStatus.SUCCESS:
+        if status is CalculationStatus.SUCCESS:
+            raw = _minutes_between(first, last)
+            if day_type.is_workday and schedule['lunchStart'] is not None:
+                left = datetime.combine(work_date, time.fromisoformat(schedule['lunchStart']))
+                right = datetime.combine(work_date, time.fromisoformat(schedule['lunchEnd']))
+                day.lunch_deduction_minutes = _minutes_between(max(first, left), min(last, right))
+            effective = max(0, raw - day.lunch_deduction_minutes)
+            day.raw_duration_minutes = raw
+            day.actual_effective_minutes = effective
+            day.actual_regular_minutes = min(effective, standard) if day_type.is_workday else 0
+            day.extra_minutes = max(0, effective - standard) if day_type.is_workday else effective
+            if requested is not None:
+                day.compensatory_leave_minutes = min(requested, max(standard - effective, 0)) if day_type.is_workday else 0
+                day.net_extra_minutes = day.extra_minutes - day.compensatory_leave_minutes
+                if requested:
+                    messages.append(f'当日申请 {requested} 分钟，自动扣减 {day.compensatory_leave_minutes} 分钟（不超过剩余标准工时）')
+                if requested and effective >= standard:
+                    day.requires_review = True
+                    messages.append('已满标准工时但仍有调休申请，请核对打卡与申请是否冲突')
+        else:
             messages.append(f'{status.value}，实际工时及加班未计算')
             if requested:
                 messages.append(f'按已确定的当日调休扣减 {requested} 分钟；缺卡无法核验剩余标准工时')
-            results.append(day)
-            continue
-        raw = _minutes_between(first, last)
-        if day_type.is_workday:
-            lunch_start_at = datetime.combine(work_date, time.fromisoformat(rules['lunchStart']))
-            lunch_end_at = datetime.combine(work_date, time.fromisoformat(rules['lunchEnd']))
-            day.lunch_deduction_minutes = _minutes_between(max(first, lunch_start_at), min(last, lunch_end_at))
-        effective = max(0, raw - day.lunch_deduction_minutes)
-        day.raw_duration_minutes = raw
-        day.actual_effective_minutes = effective
-        day.actual_regular_minutes = min(effective, STANDARD_MINUTES) if day_type.is_workday else 0
-        day.extra_minutes = max(0, effective - STANDARD_MINUTES) if day_type.is_workday else effective
-        if requested is not None:
-            day.compensatory_leave_minutes = min(requested, max(STANDARD_MINUTES - effective, 0)) if day_type.is_workday else 0
-            day.net_extra_minutes = day.extra_minutes - day.compensatory_leave_minutes
-            if requested:
-                messages.append(f'当日申请 {requested} 分钟，实际扣减 {day.compensatory_leave_minutes} 分钟（不超过剩余标准工时）')
-            if requested and effective >= STANDARD_MINUTES:
-                day.requires_review = True
-                messages.append('已满标准工时但仍有调休申请，请核对打卡与申请是否冲突')
+        day.auto_compensatory_leave_minutes = day.compensatory_leave_minutes
+        manual = change.get('compensatoryLeaveMinutes')
+        if manual is not None:
+            day.compensatory_leave_minutes = manual
+            day.net_extra_minutes = (day.extra_minutes or 0) - manual
+            day.is_leave_edited = day.is_edited = True
+            day.leave_reason = change['leaveReason']
+            messages.append(f'手动指定扣减 {manual} 分钟，替代自动值；原因：{day.leave_reason}')
+        if change.get('schedule') is not None:
+            day.is_edited = True
+        if schedule['netScheduleMinutes'] != standard:
+            messages.append(f'作息净时长 {schedule["netScheduleMinutes"]} 分钟，独立标准工时 {standard} 分钟')
         if day.lunch_deduction_minutes:
             messages.append(f'扣除午休 {day.lunch_deduction_minutes} 分钟')
         if not messages:
             messages.append('按实际打卡计算，不加计地点福利')
         results.append(day)
-    return AttendanceReport(source=source, days=results, rules=rules, calendar_info=holiday_calendar.to_dict() if holiday_calendar is not None else {})
+    return AttendanceReport(source=source, days=results, rules=rules,
+                            calendar_info=holiday_calendar.to_dict() if holiday_calendar is not None else {'years': [], 'warnings': []})

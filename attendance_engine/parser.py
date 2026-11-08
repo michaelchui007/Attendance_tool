@@ -155,90 +155,93 @@ def parse_attendance_workbook(input_path: str | Path) -> AttendanceSource:
         raise AttendanceParseError("当前仅支持 .xlsx 文件")
 
     workbook = load_workbook(path, data_only=True, read_only=True)
-    if "打卡详情" not in workbook.sheetnames:
-        raise AttendanceParseError("Excel 中缺少“打卡详情”工作表")
+    try:
+        if "打卡详情" not in workbook.sheetnames:
+            raise AttendanceParseError("Excel 中缺少“打卡详情”工作表")
 
-    detail_sheet = workbook["打卡详情"]
-    metadata = str(detail_sheet.cell(row=2, column=1).value or "")
-    start_date, end_date = _parse_period(metadata)
+        detail_sheet = workbook["打卡详情"]
+        metadata = str(detail_sheet.cell(row=2, column=1).value or "")
+        start_date, end_date = _parse_period(metadata)
 
-    records: list[PunchRecord] = []
-    employees: set[tuple[str, str]] = set()
-    compensatory_leave_records: dict[tuple[date, str, int], CompensatoryLeaveRecord] = {}
+        records: list[PunchRecord] = []
+        employees: set[tuple[str, str]] = set()
+        compensatory_leave_records: dict[tuple[date, str, int], CompensatoryLeaveRecord] = {}
 
-    for row_index, row in enumerate(detail_sheet.iter_rows(min_row=5, values_only=True), start=5):
-        natural_date = _parse_natural_date(row[0] if len(row) > 0 else None)
-        employee_name = str(row[1] or "").strip() if len(row) > 1 else ""
-        employee_account = str(row[2] or "").strip() if len(row) > 2 else ""
-        punch_type_text = str(row[6] or "").strip() if len(row) > 6 else ""
-        actual_time = _parse_time(row[8] if len(row) > 8 else None)
-        punch_status = str(row[9] or "").strip() if len(row) > 9 else ""
-        location = str(row[10] or "").strip() if len(row) > 10 else ""
-        _collect_compensatory_leave(
-            compensatory_leave_records,
-            natural_date,
-            row[14] if len(row) > 14 else None,
-            detail_sheet.title,
-            row_index,
-        )
-
-        if not natural_date or not employee_name:
-            continue
-        employees.add((employee_name, employee_account))
-        if actual_time is None:
-            continue
-        if "上班" in punch_type_text:
-            punch_type = PunchType.CHECK_IN
-        elif "下班" in punch_type_text:
-            punch_type = PunchType.CHECK_OUT
-        else:
-            continue
-
-        timestamp = datetime.combine(natural_date, actual_time)
-        records.append(
-            PunchRecord(
-                employee_name=employee_name,
-                employee_account=employee_account,
-                timestamp=timestamp,
-                work_date=_resolve_work_date(timestamp),
-                punch_type=punch_type,
-                location=location,
-                status=punch_status,
-                source_row=row_index,
-            )
-        )
-
-    if "概况统计与打卡明细" in workbook.sheetnames:
-        summary_sheet = workbook["概况统计与打卡明细"]
-        for row_index, row in enumerate(summary_sheet.iter_rows(min_row=5, values_only=True), start=5):
+        for row_index, row in enumerate(detail_sheet.iter_rows(min_row=5, values_only=True), start=5):
             natural_date = _parse_natural_date(row[0] if len(row) > 0 else None)
-            if len(row) > 1 and row[1]:
-                employees.add((str(row[1]).strip(), str(row[2] or "").strip()))
+            employee_name = str(row[1] or "").strip() if len(row) > 1 else ""
+            employee_account = str(row[2] or "").strip() if len(row) > 2 else ""
+            punch_type_text = str(row[6] or "").strip() if len(row) > 6 else ""
+            actual_time = _parse_time(row[8] if len(row) > 8 else None)
+            punch_status = str(row[9] or "").strip() if len(row) > 9 else ""
+            location = str(row[10] or "").strip() if len(row) > 10 else ""
             _collect_compensatory_leave(
                 compensatory_leave_records,
                 natural_date,
-                row[13] if len(row) > 13 else None,
-                summary_sheet.title,
+                row[14] if len(row) > 14 else None,
+                detail_sheet.title,
                 row_index,
             )
 
-    if not employees:
-        raise AttendanceParseError("没有找到员工信息")
-    if len(employees) != 1:
-        names = "、".join(sorted(name for name, _ in employees))
-        raise AttendanceParseError(f"源文件包含多个员工：{names}")
+            if not natural_date or not employee_name:
+                continue
+            employees.add((employee_name, employee_account))
+            if actual_time is None:
+                continue
+            if "上班" in punch_type_text:
+                punch_type = PunchType.CHECK_IN
+            elif "下班" in punch_type_text:
+                punch_type = PunchType.CHECK_OUT
+            else:
+                continue
 
-    employee_name, employee_account = next(iter(employees))
-    records.sort(key=lambda item: item.timestamp)
-    return AttendanceSource(
-        input_path=path,
-        employee_name=employee_name,
-        employee_account=employee_account,
-        start_date=start_date,
-        end_date=end_date,
-        records=records,
-        compensatory_leave_records=sorted(
-            compensatory_leave_records.values(),
-            key=lambda item: (item.work_date, item.description),
-        ),
-    )
+            timestamp = datetime.combine(natural_date, actual_time)
+            records.append(
+                PunchRecord(
+                    employee_name=employee_name,
+                    employee_account=employee_account,
+                    timestamp=timestamp,
+                    work_date=_resolve_work_date(timestamp),
+                    punch_type=punch_type,
+                    location=location,
+                    status=punch_status,
+                    source_row=row_index,
+                )
+            )
+
+        if "概况统计与打卡明细" in workbook.sheetnames:
+            summary_sheet = workbook["概况统计与打卡明细"]
+            for row_index, row in enumerate(summary_sheet.iter_rows(min_row=5, values_only=True), start=5):
+                natural_date = _parse_natural_date(row[0] if len(row) > 0 else None)
+                if len(row) > 1 and row[1]:
+                    employees.add((str(row[1]).strip(), str(row[2] or "").strip()))
+                _collect_compensatory_leave(
+                    compensatory_leave_records,
+                    natural_date,
+                    row[13] if len(row) > 13 else None,
+                    summary_sheet.title,
+                    row_index,
+                )
+
+        if not employees:
+            raise AttendanceParseError("没有找到员工信息")
+        if len(employees) != 1:
+            names = "、".join(sorted(name for name, _ in employees))
+            raise AttendanceParseError(f"源文件包含多个员工：{names}")
+
+        employee_name, employee_account = next(iter(employees))
+        records.sort(key=lambda item: item.timestamp)
+        return AttendanceSource(
+            input_path=path,
+            employee_name=employee_name,
+            employee_account=employee_account,
+            start_date=start_date,
+            end_date=end_date,
+            records=records,
+            compensatory_leave_records=sorted(
+                compensatory_leave_records.values(),
+                key=lambda item: (item.work_date, item.description),
+            ),
+        )
+    finally:
+        workbook.close()
