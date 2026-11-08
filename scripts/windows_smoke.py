@@ -239,10 +239,33 @@ def test_gui(application: Path, driver_path: Path, root: Path) -> dict:
     options = Options()
     options.use_webview = True
     options.binary_location = str(application)
-    browser = webdriver.Edge(service=Service(str(driver_path), log_output=str(root / "edgedriver.log")), options=options)
-    wait = WebDriverWait(browser, 90)
+    # 从启动之前开始采样，既检查主程序也检查计算引擎产生的可见控制台。
+    audit_stop = threading.Event()
+    audit = {"samples": 0, "visibleConsoleHandles": [], "observedPids": []}
+    expected_path = str(application.resolve()).casefold()
+    def monitor_windows():
+        observed = set()
+        while not audit_stop.is_set():
+            tree = set()
+            for process in psutil.process_iter(["pid", "exe"]):
+                try:
+                    if process.info["exe"] and str(Path(process.info["exe"]).resolve()).casefold() == expected_path:
+                        tree.add(process.pid)
+                        tree.update(child.pid for child in process.children(recursive=True))
+                except (psutil.Error, OSError):
+                    continue
+            observed.update(tree)
+            audit["samples"] += 1
+            audit["visibleConsoleHandles"].extend(visible_console_windows(tree))
+            audit["observedPids"] = sorted(observed)
+            audit_stop.wait(0.1)
+    monitor = threading.Thread(target=monitor_windows, daemon=True)
+    monitor.start()
+    browser = None
     checked = []
     try:
+        browser = webdriver.Edge(service=Service(str(driver_path), log_output=str(root / "edgedriver.log")), options=options)
+        wait = WebDriverWait(browser, 90)
         wait.until(lambda d: d.find_elements(By.XPATH, "//button[contains(.,'系统配置')]"))
         browser.find_element(By.XPATH, "//button[contains(.,'系统配置')]").click()
         standard = wait.until(lambda d: d.find_element(By.CSS_SELECTOR, '[aria-label="每日标准工时（小时）"]'))
@@ -308,7 +331,10 @@ def test_gui(application: Path, driver_path: Path, root: Path) -> dict:
         gone, alive = psutil.wait_procs([psutil.Process(pid) for pid in tree if psutil.pid_exists(pid)], timeout=15)
         assert not [p.pid for p in alive if p.is_running()], "关闭后仍有应用子进程"
         checked.append("关闭后清理子进程")
-        return {"checks": checked, "nativeDrop": "Explorer真实鼠标拖放"}
+        assert not audit["visibleConsoleHandles"], "启动或计算期间观察到可见控制台"
+        assert audit["observedPids"], "窗口采样没有观察到实际应用进程"
+        checked.append("启动至退出期间控制台采样")
+        return {"checks": checked, "nativeDrop": "Explorer真实鼠标拖放", "windowAudit": audit}
     except Exception:
         try:
             browser.save_screenshot(str(root / "failure.png"))
@@ -317,7 +343,11 @@ def test_gui(application: Path, driver_path: Path, root: Path) -> dict:
             pass
         raise
     finally:
-        browser.quit()
+        audit_stop.set()
+        monitor.join(5)
+        (root / "window-audit.json").write_text(json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8")
+        if browser is not None:
+            browser.quit()
 
 
 def main() -> None:

@@ -25,6 +25,15 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/attendance-build-cache
+          key: windows-nsis-cli2.11.4-nsis3.11-utils0.5.3
+      - name: Prefetch verified official NSIS tools before compilation
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/windows_prepare_nsis.ps1
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -45,7 +54,7 @@ jobs:
           ./scripts/windows_build_retry_tests.ps1
           ./scripts/build_windows.ps1
           if ($LASTEXITCODE -ne 0) { throw "Windows build failed." }
-          cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --lib
+          cargo test --release --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --lib
           if ($LASTEXITCODE -ne 0) { throw "Rust tests failed." }
       - name: Install NSIS package into a Unicode directory
         shell: pwsh
@@ -81,4 +90,12 @@ jobs:
             build/windows-validation/*.txt
             build/windows-validation/*.log
           if-no-files-found: warn
+          retention-days: 14
+      - name: Upload validated Windows installer
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: attendance-windows-tested-${{ github.sha }}
+          path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
           retention-days: 14

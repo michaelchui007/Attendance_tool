@@ -36,6 +36,9 @@ function Test-TransientBundleDownloadFailure {
     return $ExternalDownload -and $TransientFailure
 }
 
+# 在耗时编译之前取得官方安装工具，下载失败可立即定位。
+& (Join-Path $PSScriptRoot "windows_prepare_nsis.ps1")
+
 Write-Host "[1/5] Preparing Python environment..."
 if (-not (Test-Path $VenvPython)) {
     python -m venv $VenvDir
