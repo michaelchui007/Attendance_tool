@@ -5,8 +5,12 @@ $ProgressPreference = "SilentlyContinue"
 # https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.11.4/crates/tauri-bundler/src/bundle/windows/nsis/mod.rs
 # 仅改用官方 GitHub REST asset 下载路由，保留原始包和 Tauri 的校验。
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$Lock = Get-Content (Join-Path $ProjectRoot "apps\desktop\package-lock.json") -Raw | ConvertFrom-Json
-$CliVersion = $Lock.packages.'node_modules/@tauri-apps/cli'.version
+# npm 锁文件的 packages[""] 在 PowerShell 5/7 的对象反序列化中不兼容。
+# Node 是本项目构建前提，用 JSON.parse 读取原始键名，不修改锁文件。
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw "Node.js is required to read the npm lockfile." }
+$LockPath = Join-Path $ProjectRoot "apps\desktop\package-lock.json"
+$CliVersion = & node -e "const fs = require('node:fs'); const lock = JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); const version = lock.packages['node_modules/@tauri-apps/cli'].version; if (typeof version !== 'string') process.exit(1); process.stdout.write(version);" $LockPath
+if ($LASTEXITCODE -ne 0) { throw "Could not resolve Tauri CLI version from npm lockfile." }
 if ($CliVersion -ne "2.11.4") { throw "Update verified NSIS tool hashes for Tauri CLI $CliVersion before building." }
 $ArchiveCache = Join-Path $env:LOCALAPPDATA "attendance-build-cache"
 $TauriCache = Join-Path $env:LOCALAPPDATA "tauri"

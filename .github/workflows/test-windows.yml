@@ -29,11 +29,6 @@ jobs:
         with:
           path: ~/AppData/Local/attendance-build-cache
           key: windows-nsis-cli2.11.4-nsis3.11-utils0.5.3
-      - name: Prefetch verified official NSIS tools before compilation
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: ./scripts/windows_prepare_nsis.ps1
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -43,6 +38,11 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
+      - name: Prefetch verified official NSIS tools before compilation
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/windows_prepare_nsis.ps1
       - uses: dtolnay/rust-toolchain@stable
       - name: Test engine and build installed application
         shell: pwsh
