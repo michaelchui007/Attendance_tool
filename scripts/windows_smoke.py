@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import queue
 import socket
-from urllib.request import urlopen
+from urllib.request import ProxyHandler, build_opener
 import statistics
 import struct
 import subprocess
@@ -238,6 +238,19 @@ def test_gui(application: Path, driver_path: Path, root: Path) -> dict:
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
 
+    # WebView2 150+ 在高完整性进程中忽略调试环境变量，测试须以Medium运行。
+    import win32api
+    import win32con
+    import win32security
+    token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
+    sid = win32security.GetTokenInformation(token, win32security.TokenIntegrityLevel)[0]
+    integrity = sid.GetSubAuthority(sid.GetSubAuthorityCount() - 1)
+    security_context = {"integrityRid": integrity, "isUserAnAdmin": bool(ctypes.windll.shell32.IsUserAnAdmin())}
+    (root / "security-context.json").write_text(json.dumps(security_context, indent=2), encoding="utf-8")
+    assert integrity == 0x2000 and not security_context["isUserAnAdmin"], "WebView2 GUI测试必须以Medium完整性运行"
+    os.environ["NO_PROXY"] = "localhost,127.0.0.1"
+    os.environ["no_proxy"] = "localhost,127.0.0.1"
+    local_http = build_opener(ProxyHandler({}))
     options = Options()
     options.use_webview = True
     # 从启动之前开始采样，既检查主程序也检查计算引擎产生的可见控制台。
@@ -285,13 +298,14 @@ def test_gui(application: Path, driver_path: Path, root: Path) -> dict:
             if application_process.poll() is not None:
                 raise AssertionError(f"安装后主程序提前退出：{application_process.returncode}")
             try:
-                with urlopen(f"http://{debugger_address}/json/version", timeout=2) as response:
+                with local_http.open(f"http://{debugger_address}/json/version", timeout=2) as response:
                     launch_log["browserMetadata"] = json.load(response)
                 launch_log["debuggerAvailable"] = True
                 break
             except (OSError, ValueError) as error:
                 last_error = str(error)
                 time.sleep(0.25)
+        launch_log["lastDebuggerError"] = last_error
         assert launch_log["debuggerAvailable"], f"WebView2调试端口未就绪：{last_error}"
         options.debugger_address = debugger_address
         browser = webdriver.Edge(service=Service(str(driver_path), log_output=str(root / "edgedriver.log")), options=options)
@@ -367,22 +381,46 @@ def test_gui(application: Path, driver_path: Path, root: Path) -> dict:
         return {"checks": checked, "nativeDrop": "Explorer真实鼠标拖放", "windowAudit": audit}
     except Exception:
         # 即使WebDriver会话尚未创建，也保留实际Windows桌面与启动证据。
+        launch_log["captureErrors"] = []
         try:
-            from PIL import ImageGrab
-            ImageGrab.grab(all_screens=True).save(root / "failure-desktop.png")
             windows = [{"title": window.window_text(), "class": window.class_name(), "handle": window.handle}
                        for window in Desktop(backend="win32").windows()]
             (root / "failure-windows.json").write_text(json.dumps(windows, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as capture_error:
+            launch_log["captureErrors"].append("windows: " + str(capture_error))
+        try:
+            from PIL import ImageGrab
+            ImageGrab.grab(all_screens=True).save(root / "failure-desktop.png")
+        except Exception as capture_error:
+            launch_log["captureErrors"].append("desktop: " + str(capture_error))
+        try:
             if browser is not None:
                 browser.save_screenshot(str(root / "failure.png"))
                 (root / "failure-page.txt").write_text(browser.find_element(By.TAG_NAME, "body").text, encoding="utf-8")
         except Exception as capture_error:
-            launch_log["captureError"] = str(capture_error)
+            launch_log["captureErrors"].append("webview: " + str(capture_error))
         raise
     finally:
         audit_stop.set()
         monitor.join(5)
         launch_log["returnCode"] = application_process.poll() if application_process else None
+        # 仅记录本测试应用及其子进程，避免收集runner中其他程序的命令行。
+        launch_log["applicationProcesses"] = []
+        if application_process is not None and application_process.poll() is None:
+            try:
+                parent = psutil.Process(application_process.pid)
+                allowed_names = {application.name.casefold(), "attendance-engine.exe", "msedgewebview2.exe", "conhost.exe"}
+                for process in [parent, *parent.children(recursive=True)]:
+                    try:
+                        if process.name().casefold() in allowed_names:
+                            launch_log["applicationProcesses"].append({"pid": process.pid, "exe": process.exe(), "commandLine": process.cmdline()})
+                    except psutil.Error:
+                        continue
+                launch_log["debuggerListeners"] = [{"pid": connection.pid, "address": list(connection.laddr), "status": connection.status}
+                                                  for connection in psutil.net_connections(kind="tcp")
+                                                  if connection.laddr and connection.laddr.port == debug_port]
+            except psutil.Error as diagnostic_error:
+                launch_log["processDiagnosticError"] = str(diagnostic_error)
         (root / "application-launch.json").write_text(json.dumps(launch_log, ensure_ascii=False, indent=2), encoding="utf-8")
         (root / "window-audit.json").write_text(json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8")
         if browser is not None:

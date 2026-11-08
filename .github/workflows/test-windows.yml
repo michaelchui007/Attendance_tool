@@ -82,14 +82,23 @@ jobs:
           "ATTENDANCE_ENGINE=$($Engine.FullName)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Prepare native Windows UI automation
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python -m pip install selenium pywinauto psutil
+          python -m pip install selenium pywinauto psutil pillow
           if ($LASTEXITCODE -ne 0) { throw "UI test dependencies failed." }
           ./scripts/windows_prepare_webdriver.ps1
       - name: Verify Unicode paths, frozen engine and installed UI
         shell: pwsh
         run: |
-          python scripts/windows_smoke.py --app "$env:ATTENDANCE_APP" --engine "$env:ATTENDANCE_ENGINE" --driver "$env:ATTENDANCE_EDGEDRIVER" --output "build/windows-validation"
+          # WebView2 >=150 ignores debugging environment variables in elevated hosts.
+          # Grant only this runner account access before executing the suite at Medium integrity.
+          $RunnerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          icacls "$env:GITHUB_WORKSPACE" /grant "*$($RunnerSid):(OI)(CI)M"
+          if ($LASTEXITCODE -ne 0) { throw "Workspace permission preparation failed." }
+          icacls "$env:RUNNER_TEMP" /grant "*$($RunnerSid):(OI)(CI)M"
+          if ($LASTEXITCODE -ne 0) { throw "Temporary directory permission preparation failed." }
+          & "$env:ATTENDANCE_GSUDO" --integrity Medium --wait (Get-Command python).Source scripts/windows_smoke.py --app "$env:ATTENDANCE_APP" --engine "$env:ATTENDANCE_ENGINE" --driver "$env:ATTENDANCE_EDGEDRIVER" --output "build/windows-validation"
           if ($LASTEXITCODE -ne 0) { throw "Installed application validation failed." }
       - name: Upload logs, screenshots and performance results
         if: always()
