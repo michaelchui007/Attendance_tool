@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import queue
+import socket
+from urllib.request import urlopen
 import statistics
 import struct
 import subprocess
@@ -238,7 +240,6 @@ def test_gui(application: Path, driver_path: Path, root: Path) -> dict:
 
     options = Options()
     options.use_webview = True
-    options.binary_location = str(application)
     # 从启动之前开始采样，既检查主程序也检查计算引擎产生的可见控制台。
     audit_stop = threading.Event()
     audit = {"samples": 0, "visibleConsoleHandles": [], "observedPids": []}
@@ -262,8 +263,37 @@ def test_gui(application: Path, driver_path: Path, root: Path) -> dict:
     monitor = threading.Thread(target=monitor_windows, daemon=True)
     monitor.start()
     browser = None
+    application_process = None
+    launch_log = {"debuggerAvailable": False}
     checked = []
+    stdout_log = (root / "application-stdout.log").open("wb")
+    stderr_log = (root / "application-stderr.log").open("wb")
     try:
+        # 直接启动真实安装程序，再附加到固定调试端口，避免依赖DevToolsActivePort临时文件。
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            debug_port = listener.getsockname()[1]
+        debugger_address = f"127.0.0.1:{debug_port}"
+        app_env = dict(os.environ)
+        app_env["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = f"--remote-debugging-port={debug_port} --remote-debugging-address=127.0.0.1 --enable-automation"
+        app_env["WEBVIEW2_USER_DATA_FOLDER"] = str((root / "webview-profile").resolve())
+        application_process = subprocess.Popen([str(application)], env=app_env, stdout=stdout_log, stderr=stderr_log)
+        launch_log.update({"pid": application_process.pid, "debuggerAddress": debugger_address})
+        deadline = time.monotonic() + 60
+        last_error = ""
+        while time.monotonic() < deadline:
+            if application_process.poll() is not None:
+                raise AssertionError(f"安装后主程序提前退出：{application_process.returncode}")
+            try:
+                with urlopen(f"http://{debugger_address}/json/version", timeout=2) as response:
+                    launch_log["browserMetadata"] = json.load(response)
+                launch_log["debuggerAvailable"] = True
+                break
+            except (OSError, ValueError) as error:
+                last_error = str(error)
+                time.sleep(0.25)
+        assert launch_log["debuggerAvailable"], f"WebView2调试端口未就绪：{last_error}"
+        options.debugger_address = debugger_address
         browser = webdriver.Edge(service=Service(str(driver_path), log_output=str(root / "edgedriver.log")), options=options)
         wait = WebDriverWait(browser, 90)
         wait.until(lambda d: d.find_elements(By.XPATH, "//button[contains(.,'系统配置')]"))
@@ -336,18 +366,42 @@ def test_gui(application: Path, driver_path: Path, root: Path) -> dict:
         checked.append("启动至退出期间控制台采样")
         return {"checks": checked, "nativeDrop": "Explorer真实鼠标拖放", "windowAudit": audit}
     except Exception:
+        # 即使WebDriver会话尚未创建，也保留实际Windows桌面与启动证据。
         try:
-            browser.save_screenshot(str(root / "failure.png"))
-            (root / "failure-page.txt").write_text(browser.find_element(By.TAG_NAME, "body").text, encoding="utf-8")
-        except Exception:
-            pass
+            from PIL import ImageGrab
+            ImageGrab.grab(all_screens=True).save(root / "failure-desktop.png")
+            windows = [{"title": window.window_text(), "class": window.class_name(), "handle": window.handle}
+                       for window in Desktop(backend="win32").windows()]
+            (root / "failure-windows.json").write_text(json.dumps(windows, ensure_ascii=False, indent=2), encoding="utf-8")
+            if browser is not None:
+                browser.save_screenshot(str(root / "failure.png"))
+                (root / "failure-page.txt").write_text(browser.find_element(By.TAG_NAME, "body").text, encoding="utf-8")
+        except Exception as capture_error:
+            launch_log["captureError"] = str(capture_error)
         raise
     finally:
         audit_stop.set()
         monitor.join(5)
+        launch_log["returnCode"] = application_process.poll() if application_process else None
+        (root / "application-launch.json").write_text(json.dumps(launch_log, ensure_ascii=False, indent=2), encoding="utf-8")
         (root / "window-audit.json").write_text(json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8")
         if browser is not None:
             browser.quit()
+        if application_process is not None and application_process.poll() is None:
+            try:
+                process = psutil.Process(application_process.pid)
+                children = process.children(recursive=True)
+                for child in children:
+                    try:
+                        child.kill()
+                    except psutil.NoSuchProcess:
+                        pass
+                process.kill()
+                psutil.wait_procs([process, *children], timeout=10)
+            except psutil.NoSuchProcess:
+                pass
+        stdout_log.close()
+        stderr_log.close()
 
 
 def main() -> None:
