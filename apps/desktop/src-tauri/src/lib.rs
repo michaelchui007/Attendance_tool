@@ -1,5 +1,6 @@
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::io::Read;
 use std::path::PathBuf;
 use tauri::async_runtime::{Mutex, Receiver};
 use tauri::{AppHandle, Manager, State};
@@ -59,6 +60,28 @@ async fn pick_excel_file(app: AppHandle) -> Result<Option<NativePathSelection>, 
         .transpose()
 }
 
+/// 校验浏览或拖放的源文件，避免目录、不可读文件和非工作簿替换当前报表。
+///
+/// Args:
+///     input_path: 用户明确选择的本地工作簿路径。
+/// Returns:
+///     基础校验成功返回空值；完整工作表结构仍由计算引擎验证。
+#[tauri::command]
+fn validate_input_file(input_path: String) -> Result<(), String> {
+    let path = PathBuf::from(input_path);
+    if !path.is_file() || path.extension().and_then(|value| value.to_str())
+        .map(|value| !value.eq_ignore_ascii_case("xlsx")).unwrap_or(true) {
+        return Err("请选择单个可读取的 .xlsx 文件，不支持文件夹。".to_string());
+    }
+    let mut file = std::fs::File::open(&path).map_err(|_| "无法读取报表，请检查文件权限。".to_string())?;
+    let mut signature = [0; 4];
+    file.read_exact(&mut signature).map_err(|_| "工作簿为空或已损坏。".to_string())?;
+    if signature != [0x50, 0x4b, 0x03, 0x04] {
+        return Err("文件不是有效的 .xlsx 工作簿，可能已损坏或受到密码保护。".to_string());
+    }
+    Ok(())
+}
+
 fn engine_executable(app: &AppHandle) -> Result<PathBuf, String> {
     let resource_dir = app
         .path()
@@ -104,12 +127,18 @@ async fn send_calculation_request(
     connection: &mut EngineConnection,
     input_path: String,
     output_root: Option<String>,
+    overrides: Option<Value>,
+    lunch_start: Option<String>,
+    lunch_end: Option<String>,
 ) -> Result<Value, String> {
     let mut request = serde_json::to_vec(&json!({
         "requestId": 1,
         "command": "calculate",
         "inputPath": input_path,
         "outputRoot": output_root,
+        "overrides": overrides.unwrap_or_else(|| json!([])),
+        "lunchStart": lunch_start.unwrap_or_else(|| "12:00".to_string()),
+        "lunchEnd": lunch_end.unwrap_or_else(|| "13:30".to_string()),
     }))
     .map_err(|error| format!("无法序列化计算请求：{error}"))?;
     request.push(b'\n');
@@ -163,6 +192,9 @@ async fn calculate_attendance(
     state: State<'_, EngineState>,
     input_path: String,
     output_root: Option<String>,
+    overrides: Option<Value>,
+    lunch_start: Option<String>,
+    lunch_end: Option<String>,
 ) -> Result<Value, String> {
     let mut guard = state.connection.lock().await;
     if guard.is_none() {
@@ -173,6 +205,9 @@ async fn calculate_attendance(
         guard.as_mut().expect("engine connection initialized"),
         input_path,
         output_root.filter(|value| !value.trim().is_empty()),
+        overrides,
+        lunch_start,
+        lunch_end,
     )
     .await;
 
@@ -216,7 +251,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![pick_excel_file, calculate_attendance])
+        .invoke_handler(tauri::generate_handler![pick_excel_file, validate_input_file, calculate_attendance])
         .run(tauri::generate_context!())
         .expect("error while running attendance desktop application");
 }

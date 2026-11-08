@@ -10,6 +10,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from .models import AttendanceReport, CalculationStatus
+from . import __version__
 
 _TITLE_FILL = PatternFill("solid", fgColor="16324F")
 _HEADER_FILL = PatternFill("solid", fgColor="DCEAF7")
@@ -59,6 +60,7 @@ def _calendar_source_text(report: AttendanceReport) -> str:
 
 
 def export_report(report: AttendanceReport, export_root: str | Path | None = None) -> Path:
+    """导出原始资料、分摊扣减及手动修订，保持历史文件不被覆盖。"""
     source = report.source
     root = Path(export_root).expanduser().resolve() if export_root else source.input_path.parent / "export_report"
     output_dir = root / f"{_safe_name(source.employee_name)}-{source.end_date:%Y%m%d}"
@@ -66,7 +68,12 @@ def export_report(report: AttendanceReport, export_root: str | Path | None = Non
     base_name = f"{_safe_name(source.employee_name)}-{source.start_date:%Y%m%d}-{source.end_date:%Y%m%d}-考勤统计"
     output_path = output_dir / f"{base_name}.xlsx"
     if output_path.exists():
-        output_path = output_dir / f"{base_name}-{datetime.now():%H%M%S}.xlsx"
+        output_path = output_dir / f"{base_name}-{datetime.now():%H%M%S%f}.xlsx"
+        suffix = 1
+        timestamp_name = output_path.stem
+        while output_path.exists():
+            output_path = output_dir / f"{timestamp_name}-{suffix}.xlsx"
+            suffix += 1
 
     wb = Workbook()
     summary = wb.active
@@ -88,7 +95,7 @@ def export_report(report: AttendanceReport, export_root: str | Path | None = Non
         "应计标准工时", _format_minutes(report.required_standard_minutes),
         "实际有效工时", _format_minutes(report.actual_effective_minutes),
         "加班时长", _format_minutes(report.extra_minutes),
-        "调休时长", _format_minutes(report.compensatory_leave_minutes),
+        "实际调休扣减", _format_minutes(report.compensatory_leave_minutes),
         "净剩加班时长", _format_minutes(report.net_extra_minutes),
         "异常天数", report.abnormal_day_count,
     ])
@@ -105,14 +112,14 @@ def export_report(report: AttendanceReport, export_root: str | Path | None = Non
     summary["B5"].alignment = Alignment(vertical="center")
     summary.append([
         "日期", "日期类型", "状态", "应计标准", "实际有效", "加班时长",
-        "调休时长", "净剩加班时长", "最早上班", "最晚下班",
+        "实际调休扣减", "净剩加班时长", "最早上班", "最晚下班",
     ])
     _style_header(summary, 6, 1, 10)
     for day in report.days:
         summary.append([
             day.work_date,
             day.day_type.value,
-            day.status.value,
+            day.status.value + ("（待核对）" if day.requires_review else ""),
             _format_minutes(day.required_standard_minutes),
             _format_minutes(day.actual_effective_minutes),
             _format_minutes(day.extra_minutes),
@@ -137,8 +144,9 @@ def export_report(report: AttendanceReport, export_root: str | Path | None = Non
     details.sheet_view.showGridLines = False
     headers = [
         "日期", "星期", "日期类型", "状态", "应计标准工时", "最早上班", "最晚下班", "原始跨度",
-        "午休扣除", "地点福利加计", "实际正常工时", "实际有效工时", "加班时长",
-        "调休时长", "净剩加班时长", "计算说明",
+        "午休扣除", "地点福利（已取消）", "实际正常工时", "实际有效工时", "加班时长",
+        "实际调休扣减", "净剩加班时长", "计算说明", "当日申请量",
+        "原始最早上班", "原始最晚下班", "手动修订", "需要核对",
     ]
     details.append(headers)
     _style_header(details, 1, 1, len(headers))
@@ -157,19 +165,25 @@ def export_report(report: AttendanceReport, export_root: str | Path | None = Non
             None if day.actual_regular_minutes is None else day.actual_regular_minutes / 60,
             None if day.actual_effective_minutes is None else day.actual_effective_minutes / 60,
             None if day.extra_minutes is None else day.extra_minutes / 60,
-            day.compensatory_leave_minutes / 60,
-            day.net_extra_minutes / 60,
+            None if day.compensatory_leave_minutes is None else day.compensatory_leave_minutes / 60,
+            None if day.net_extra_minutes is None else day.net_extra_minutes / 60,
             "；".join(day.messages),
+            None if day.leave_requested_minutes is None else day.leave_requested_minutes / 60,
+            day.original_first_check_in, day.original_last_check_out,
+            "是" if day.is_edited else "否", "是" if day.requires_review else "否",
         ])
     for row in range(2, details.max_row + 1):
         details.cell(row, 1).number_format = "yyyy-mm-dd"
         details.cell(row, 6).number_format = "yyyy-mm-dd hh:mm"
         details.cell(row, 7).number_format = "yyyy-mm-dd hh:mm"
+        details.cell(row, 17).number_format = "0.00"
+        details.cell(row, 18).number_format = "yyyy-mm-dd hh:mm"
+        details.cell(row, 19).number_format = "yyyy-mm-dd hh:mm"
         for col in range(5, 16):
             if col not in {6, 7}:
                 details.cell(row, col).number_format = "0.00"
     details.freeze_panes = "A2"
-    details.auto_filter.ref = f"A1:P{details.max_row}"
+    details.auto_filter.ref = f"A1:U{details.max_row}"
     details.conditional_formatting.add(
         f"D2:D{details.max_row}",
         FormulaRule(formula=["D2<>\"正常\""], fill=_WARNING_FILL),
@@ -194,7 +208,7 @@ def export_report(report: AttendanceReport, export_root: str | Path | None = Non
 
     leave = wb.create_sheet("原始调休记录")
     leave.sheet_view.showGridLines = False
-    leave_headers = ["工作日期", "调休时长（小时）", "假勤申请", "来源工作表", "源表行号"]
+    leave_headers = ["源行日期", "原始填报时长（小时，不跨行累计）", "假勤申请", "来源工作表", "源表行号", "申请开始", "申请结束", "解析提示"]
     leave.append(leave_headers)
     _style_header(leave, 1, 1, len(leave_headers))
     for record in source.compensatory_leave_records:
@@ -204,14 +218,33 @@ def export_report(report: AttendanceReport, export_root: str | Path | None = Non
             record.description,
             record.source_sheet,
             record.source_row,
+            record.start_at, record.end_at, record.parse_warning,
         ])
     for row in range(2, leave.max_row + 1):
         leave.cell(row, 1).number_format = "yyyy-mm-dd"
         leave.cell(row, 2).number_format = "0.00"
+        leave.cell(row, 6).number_format = "yyyy-mm-dd hh:mm"
+        leave.cell(row, 7).number_format = "yyyy-mm-dd hh:mm"
     leave.freeze_panes = "A2"
-    leave.auto_filter.ref = f"A1:E{leave.max_row}"
+    leave.auto_filter.ref = f"A1:H{leave.max_row}"
     _autofit(leave)
     leave.column_dimensions["C"].width = 48
+
+    rules = wb.create_sheet("计算规则")
+    rules.append(["规则", "本次采用值"])
+    rules.append(["软件版本", __version__])
+    rules.append(["考勤日边界", report.rules.get("dayBoundary", "04:00")])
+    rules.append(["午休开始", report.rules.get("lunchStart", "12:00")])
+    rules.append(["午休结束", report.rules.get("lunchEnd", "13:30")])
+    rules.append(["请假分摊上午", f"09:00～{report.rules.get('lunchStart', '12:00')}"])
+    rules.append(["请假分摊下午", f"{report.rules.get('lunchEnd', '13:30')}～{report.rules.get('workdayEnd', '18:30')}"])
+    rules.append(["标准工时（分钟）", 480])
+    rules.append(["地点福利", "已取消"])
+    rules.append(["扣减规则", "完整打卡：实际扣减=min(当日申请量,max(480-实际有效工时,0))"])
+    rules.append(["待核对说明", "未知调休扣减及净额显示为未计算或空白，不以0代替；请查看每日说明"])
+    _style_header(rules, 1, 1, 2)
+    _autofit(rules)
+    rules.column_dimensions["B"].width = 80
 
     wb.save(output_path)
     report.output_path = output_path

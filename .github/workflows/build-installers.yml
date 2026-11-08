@@ -9,6 +9,8 @@ on:
         default: false
         type: boolean
   push:
+    branches:
+      - "release/v*"
     tags:
       - "v*"
 
@@ -39,8 +41,12 @@ jobs:
           set -euo pipefail
           version="$(python scripts/resolve_app_version.py)"
           tag="v${version}"
-          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_NAME}" != "${tag}" ]]; then
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" != "${tag}" ]]; then
             echo "Tag ${GITHUB_REF_NAME} does not match project version ${tag}." >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_REF_TYPE}" == "branch" && "${GITHUB_REF_NAME}" != "release/${tag}" ]]; then
+            echo "Release builds must use release/${tag}, not ${GITHUB_REF_NAME}." >&2
             exit 1
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
@@ -96,7 +102,7 @@ jobs:
   macos-arm64:
     name: Build macOS arm64 installer
     needs: metadata
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -161,8 +167,10 @@ jobs:
           from pathlib import Path
 
           root = Path("release-assets")
-          installers = sorted([*root.rglob("*.exe"), *root.rglob("*.dmg")])
-          if len(installers) != 2:
+          windows_installers = list(root.rglob("*.exe"))
+          macos_installers = list(root.rglob("*.dmg"))
+          installers = sorted([*windows_installers, *macos_installers])
+          if len(windows_installers) != 1 or len(macos_installers) != 1:
               names = ", ".join(str(path) for path in installers) or "none"
               raise SystemExit(f"Expected one Windows EXE and one macOS DMG, found: {names}")
           lines = []
@@ -201,12 +209,13 @@ jobs:
           fi
 
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber
+            echo "Release ${RELEASE_TAG} already exists; refusing to overwrite published assets." >&2
+            exit 1
           else
             create_args=(
               release create "${RELEASE_TAG}" "${assets[@]}"
               --title "考勤统计 ${RELEASE_TAG}"
-              --generate-notes
+              --notes-file "docs/releases/${RELEASE_TAG}.md"
             )
             if [[ "${tag_exists}" == "true" ]]; then
               create_args+=(--verify-tag)

@@ -52,3 +52,16 @@ def test_server_returns_error_and_keeps_processing(monkeypatch):
     assert messages[1]["success"] is False
     assert messages[1]["requestId"] == 1
     assert messages[2] == {"success": True, "requestId": 2}
+
+
+def test_server_forwards_edits_and_lunch_rules(monkeypatch):
+    """常驻协议将首尾修订和午休配置传给同一次计算。"""
+    received = []
+    monkeypatch.setattr(cli, "run_calculate", lambda args: received.append(args) or {"success": True})
+    overrides = [{"workDate": "2026-07-01", "firstCheckIn": "2026-07-01T09:00", "lastCheckOut": "2026-07-01T18:00"}]
+    request = {"requestId": 1, "command": "calculate", "inputPath": "input.xlsx",
+               "overrides": overrides, "lunchStart": "12:00", "lunchEnd": "13:00"}
+    cli.run_server(io.StringIO(json.dumps(request)), io.StringIO(), io.StringIO(), prefetch=False)
+    assert received[0].overrides == overrides
+    assert received[0].lunch_start == "12:00"
+    assert received[0].lunch_end == "13:00"

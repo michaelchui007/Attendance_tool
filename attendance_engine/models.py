@@ -57,6 +57,10 @@ class CompensatoryLeaveRecord:
     description: str
     source_sheet: str
     source_row: int = 0
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    parse_warning: str = ""
+    item_index: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -65,6 +69,10 @@ class CompensatoryLeaveRecord:
             "description": self.description,
             "sourceSheet": self.source_sheet,
             "sourceRow": self.source_row,
+            "startAt": self.start_at.isoformat(timespec="minutes") if self.start_at else None,
+            "endAt": self.end_at.isoformat(timespec="minutes") if self.end_at else None,
+            "parseWarning": self.parse_warning,
+            "itemIndex": self.item_index,
         }
 
 
@@ -88,8 +96,8 @@ class DailyAttendanceResult:
     actual_regular_minutes: int | None
     actual_effective_minutes: int | None
     extra_minutes: int | None
-    compensatory_leave_minutes: int = 0
-    net_extra_minutes: int = 0
+    compensatory_leave_minutes: int | None = 0
+    net_extra_minutes: int | None = 0
     raw_duration_minutes: int | None = None
     lunch_deduction_minutes: int = 0
     location_benefit_minutes: int = 0
@@ -97,6 +105,12 @@ class DailyAttendanceResult:
     last_check_out: datetime | None = None
     records: list[PunchRecord] = field(default_factory=list)
     messages: list[str] = field(default_factory=list)
+    leave_requested_minutes: int | None = 0
+    leave_records: list[CompensatoryLeaveRecord] = field(default_factory=list)
+    original_first_check_in: datetime | None = None
+    original_last_check_out: datetime | None = None
+    is_edited: bool = False
+    requires_review: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -117,6 +131,12 @@ class DailyAttendanceResult:
             "lastCheckOut": self.last_check_out.isoformat(timespec="minutes") if self.last_check_out else None,
             "messages": self.messages,
             "records": [record.to_dict() for record in self.records],
+            "leaveRequestedMinutes": self.leave_requested_minutes,
+            "leaveRecords": [record.to_dict() for record in self.leave_records],
+            "originalFirstCheckIn": self.original_first_check_in.isoformat(timespec="minutes") if self.original_first_check_in else None,
+            "originalLastCheckOut": self.original_last_check_out.isoformat(timespec="minutes") if self.original_last_check_out else None,
+            "isEdited": self.is_edited,
+            "requiresReview": self.requires_review,
         }
 
 
@@ -126,6 +146,7 @@ class AttendanceReport:
     days: list[DailyAttendanceResult]
     output_path: Path | None = None
     calendar_info: dict[str, Any] = field(default_factory=dict)
+    rules: dict[str, Any] = field(default_factory=dict)
 
     @property
     def required_standard_minutes(self) -> int:
@@ -140,16 +161,26 @@ class AttendanceReport:
         return sum(day.extra_minutes or 0 for day in self.days)
 
     @property
-    def compensatory_leave_minutes(self) -> int:
-        return sum(day.compensatory_leave_minutes for day in self.days)
+    def compensatory_leave_minutes(self) -> int | None:
+        if any(day.compensatory_leave_minutes is None for day in self.days):
+            return None
+        return sum(day.compensatory_leave_minutes or 0 for day in self.days)
 
     @property
-    def net_extra_minutes(self) -> int:
-        return self.extra_minutes - self.compensatory_leave_minutes
+    def net_extra_minutes(self) -> int | None:
+        leave = self.compensatory_leave_minutes
+        return self.extra_minutes - leave if leave is not None else None
+
+    @property
+    def leave_requested_minutes(self) -> int | None:
+        """汇总已分摊的申请量，任何未知日量均保持待核对。"""
+        if any(day.leave_requested_minutes is None for day in self.days):
+            return None
+        return sum(day.leave_requested_minutes or 0 for day in self.days)
 
     @property
     def abnormal_day_count(self) -> int:
-        return sum(day.status is not CalculationStatus.SUCCESS for day in self.days)
+        return sum(day.status is not CalculationStatus.SUCCESS or day.requires_review for day in self.days)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -170,11 +201,14 @@ class AttendanceReport:
                 "netExtraMinutes": self.net_extra_minutes,
                 "normalDayCount": len(self.days) - self.abnormal_day_count,
                 "abnormalDayCount": self.abnormal_day_count,
+                "leaveRequestedMinutes": self.leave_requested_minutes,
+                "requiresReview": any(day.requires_review for day in self.days),
             },
             "days": [day.to_dict() for day in self.days],
             "compensatoryLeaves": [
                 record.to_dict() for record in self.source.compensatory_leave_records
             ],
             "calendar": self.calendar_info,
+            "rules": self.rules,
             "outputPath": str(self.output_path) if self.output_path else None,
         }

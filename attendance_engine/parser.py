@@ -14,6 +14,11 @@ _METADATA_YEAR_RE = re.compile(r"制表时间\s*:\s*(\d{4})-")
 _DATE_RE = re.compile(r"(\d{4})/(\d{2})/(\d{2})")
 _TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$")
 _COMPENSATORY_LEAVE_RE = re.compile(r"调休(?:假)?\s*(\d+(?:\.\d+)?)\s*小时")
+_LEAVE_DATETIME_RE = re.compile(
+    r"(?:(?P<year>\d{4})[/年-])?(?P<month>\d{1,2})[/月-](?P<day>\d{1,2})日?"
+    r"\s+(?P<hour>\d{1,2}):(?P<minute>\d{2})"
+)
+_LEAVE_ITEM_BOUNDARY_RE = re.compile(r"[；;\n]|(?:年假|事假|病假|婚假|产假|陪产假|丧假|育儿假|补卡申请)")
 
 
 class AttendanceParseError(ValueError):
@@ -61,7 +66,45 @@ def _parse_time(value: object) -> time | None:
 
 
 def _resolve_work_date(timestamp: datetime) -> date:
-    return timestamp.date() - timedelta(days=1) if timestamp.time() < time(3, 0) else timestamp.date()
+    """按当地报表时间，以凌晨 04:00 划分考勤日。"""
+    return timestamp.date() - timedelta(days=1) if timestamp.time() < time(4, 0) else timestamp.date()
+
+
+def _parse_leave_interval(description: str, row_date: date) -> tuple[datetime | None, datetime | None, str]:
+    """解析假勤文字中的区间，并用所在行日期补全年份。
+
+    Args:
+        description: 单项调休申请的原始文字。
+        row_date: 申请出现在报表中的自然日期，用于消除跨年歧义。
+
+    Returns:
+        开始时间、结束时间以及无法确定区间时的提示。
+    """
+    matches = list(_LEAVE_DATETIME_RE.finditer(description))
+    if not matches:
+        return None, None, ""
+    if len(matches) != 2:
+        return None, None, "申请起止时间不完整，无法确定每日分摊"
+    first, last = matches
+    candidates = []
+    for start_year in ([int(first['year'])] if first['year'] else range(row_date.year - 1, row_date.year + 2)):
+        try:
+            start = datetime(start_year, int(first['month']), int(first['day']), int(first['hour']), int(first['minute']))
+            end_year = int(last['year']) if last['year'] else start_year + int(
+                (int(last['month']), int(last['day'])) < (start.month, start.day)
+            )
+            end = datetime(end_year, int(last['month']), int(last['day']), int(last['hour']), int(last['minute']))
+        except ValueError:
+            continue
+        if end > start and (end - start).days <= 366:
+            distance = min(abs((row_date - start.date()).days), abs((row_date - end.date()).days))
+            candidates.append((not (start.date() <= row_date <= end.date()), distance, start, end))
+    if not candidates:
+        return None, None, "申请起止时间无效，无法确定每日分摊"
+    _, _, start, end = min(candidates)
+    if not start.date() <= row_date <= end.date():
+        return start, end, "申请起止日期与源行日期不一致，请核对申请年份及来源"
+    return start, end, ""
 
 
 def _parse_compensatory_leave_minutes(value: object) -> tuple[int, str]:
@@ -74,27 +117,34 @@ def _parse_compensatory_leave_minutes(value: object) -> tuple[int, str]:
 
 
 def _collect_compensatory_leave(
-    records: dict[tuple[date, str], CompensatoryLeaveRecord],
+    records: dict[tuple[date, str, int], CompensatoryLeaveRecord],
     work_date: date | None,
     value: object,
     source_sheet: str,
     source_row: int,
 ) -> None:
+    """收集每项申请，按同一天和申请原文去重，保留源行追溯信息。"""
     if work_date is None:
         return
-    minutes, description = _parse_compensatory_leave_minutes(value)
-    if minutes <= 0:
-        return
-    records.setdefault(
-        (work_date, description),
-        CompensatoryLeaveRecord(
-            work_date=work_date,
-            minutes=minutes,
-            description=description,
-            source_sheet=source_sheet,
-            source_row=source_row,
-        ),
-    )
+    description = str(value or "").strip()
+    matches = list(_COMPENSATORY_LEAVE_RE.finditer(description))
+    for index, match in enumerate(matches):
+        segment = description[match.start():matches[index + 1].start() if index + 1 < len(matches) else len(description)]
+        boundary = _LEAVE_ITEM_BOUNDARY_RE.search(segment, match.end() - match.start())
+        if boundary is not None:
+            segment = segment[:boundary.start()]
+        minutes = int((Decimal(match.group(1)) * 60).to_integral_value(rounding=ROUND_HALF_UP))
+        if minutes <= 0:
+            continue
+        start, end, warning = _parse_leave_interval(segment, work_date)
+        records.setdefault(
+            (work_date, description, index),
+            CompensatoryLeaveRecord(
+                work_date=work_date, minutes=minutes, description=description,
+                source_sheet=source_sheet, source_row=source_row,
+                start_at=start, end_at=end, parse_warning=warning, item_index=index,
+            ),
+        )
 
 
 def parse_attendance_workbook(input_path: str | Path) -> AttendanceSource:
@@ -114,7 +164,7 @@ def parse_attendance_workbook(input_path: str | Path) -> AttendanceSource:
 
     records: list[PunchRecord] = []
     employees: set[tuple[str, str]] = set()
-    compensatory_leave_records: dict[tuple[date, str], CompensatoryLeaveRecord] = {}
+    compensatory_leave_records: dict[tuple[date, str, int], CompensatoryLeaveRecord] = {}
 
     for row_index, row in enumerate(detail_sheet.iter_rows(min_row=5, values_only=True), start=5):
         natural_date = _parse_natural_date(row[0] if len(row) > 0 else None)

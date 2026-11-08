@@ -1,5 +1,6 @@
 import type { AttendanceResult } from "../types";
 import { formatMinutes } from "../formatters";
+import { needsAttention } from "../attendanceState";
 
 export type InsightKey = "required" | "effective" | "overtime" | "leave" | "net" | "abnormal" | "calendar";
 
@@ -63,15 +64,11 @@ export default function InsightDrawer({
     if (day.requiredStandardMinutes === 0 || day.actualEffectiveMinutes === null) return sum;
     return sum + Math.max(0, day.actualEffectiveMinutes - 480);
   }, 0);
-  const benefitOvertime = result.days.reduce((sum, day) => {
-    if (day.requiredStandardMinutes === 0 || day.extraMinutes === null || day.actualEffectiveMinutes === null) return sum;
-    return sum + Math.max(0, day.extraMinutes - Math.max(0, day.actualEffectiveMinutes - 480));
-  }, 0);
   const restOvertime = result.days.reduce((sum, day) => {
     if (day.requiredStandardMinutes > 0) return sum;
     return sum + (day.extraMinutes || 0);
   }, 0);
-  const abnormalDays = result.days.filter((day) => day.status !== "正常");
+  const abnormalDays = result.days.filter(needsAttention);
 
   const requiredGroups = Array.from(
     workdays.reduce((groups, day) => {
@@ -85,27 +82,27 @@ export default function InsightDrawer({
 
   const abnormalGroups = Array.from(
     abnormalDays.reduce((groups, day) => {
-      groups.set(day.status, (groups.get(day.status) || 0) + 1);
+      const status = day.requiresReview ? "调休待核对" : day.status;
+      groups.set(status, (groups.get(status) || 0) + 1);
       return groups;
     }, new Map<string, number>()),
   );
 
-  let runningBalance = 0;
-  const balanceRows = result.days
-    .map((day) => {
-      const delta = (day.extraMinutes || 0) - day.compensatoryLeaveMinutes;
-      runningBalance += delta;
-      return { day, delta, balance: runningBalance };
-    })
-    .filter((item) => item.delta !== 0);
+  // 未知扣减会使后续累计余额未知，不能按零继续累计。
+  let runningBalance: number | null = 0;
+  const balanceRows = result.days.map((day) => {
+    const delta = day.netExtraMinutes;
+    runningBalance = runningBalance === null || delta === null ? null : runningBalance + delta;
+    return { day, delta, balance: runningBalance };
+  }).filter((item) => item.delta !== 0);
 
   const titles: Record<InsightKey, { eyebrow: string; title: string; value: string }> = {
     required: { eyebrow: "STANDARD HOURS", title: "应计标准工时", value: formatMinutes(result.summary.requiredStandardMinutes) },
     effective: { eyebrow: "EFFECTIVE HOURS", title: "实际有效工时", value: formatMinutes(result.summary.actualEffectiveMinutes) },
     overtime: { eyebrow: "OVERTIME", title: "加班时长", value: formatMinutes(result.summary.extraMinutes) },
-    leave: { eyebrow: "COMPENSATORY LEAVE", title: "调休时长", value: formatMinutes(result.summary.compensatoryLeaveMinutes) },
-    net: { eyebrow: "NET OVERTIME", title: "净剩加班时长", value: formatMinutes(result.summary.netExtraMinutes) },
-    abnormal: { eyebrow: "ATTENDANCE ALERTS", title: "异常日期", value: result.summary.abnormalDayCount + " 天" },
+    leave: { eyebrow: "COMPENSATORY LEAVE", title: "实际调休扣减", value: result.summary.compensatoryLeaveMinutes === null ? "待核对" : formatMinutes(result.summary.compensatoryLeaveMinutes) },
+    net: { eyebrow: "NET OVERTIME", title: "净剩加班时长", value: result.summary.netExtraMinutes === null ? "待核对" : formatMinutes(result.summary.netExtraMinutes) },
+    abnormal: { eyebrow: "ATTENDANCE ALERTS", title: "待处理日期", value: abnormalDays.length + " 天" },
     calendar: { eyebrow: "HOLIDAY CALENDAR", title: "节假日数据", value: result.calendar.years.length + " 个年份" },
   };
   const heading = titles[active];
@@ -158,10 +155,9 @@ export default function InsightDrawer({
           {active === "overtime" && (
             <section className="insight-section">
               <h3>加班来源</h3>
-              <p>工作日超过 8 小时的部分、实际生效的地点福利和休息日打卡共同组成加班时长。</p>
+              <p>工作日实际有效工时超过 8 小时的部分，加上休息日完整打卡跨度。地点不再影响结果。</p>
               <div className="breakdown-list">
                 <BreakdownRow label="工作日超时" value={formatMinutes(baseWorkdayOvertime)} />
-                <BreakdownRow label="地点福利折算" note="只计算实际进入加班的部分" value={formatMinutes(benefitOvertime)} />
                 <BreakdownRow label="休息日打卡" value={formatMinutes(restOvertime)} />
                 <BreakdownRow label="合计" value={formatMinutes(result.summary.extraMinutes)} />
               </div>
@@ -171,11 +167,12 @@ export default function InsightDrawer({
           {active === "leave" && (
             <section className="insight-section">
               <h3>已识别的调休申请</h3>
-              <p>相同日期、相同申请内容只扣除一次。</p>
+              <p>以下保留源表申请原值。每日申请量按工作时段分摊，实际扣减另按剩余标准工时限制；点击查看当天明细。</p>
+              <BreakdownRow label="实际扣减合计" value={result.summary.compensatoryLeaveMinutes === null ? "待核对" : formatMinutes(result.summary.compensatoryLeaveMinutes)} />
               {result.compensatoryLeaves.length ? (
                 <div className="leave-record-list">
-                  {result.compensatoryLeaves.map((record) => (
-                    <button key={record.workDate + record.description} className="leave-record" onClick={() => onSelectDay(record.workDate)}>
+                  {result.compensatoryLeaves.map((record, index) => (
+                    <button key={record.workDate + record.description + index} className="leave-record" onClick={() => onSelectDay(record.workDate)}>
                       <div><span>{record.workDate}</span><strong>{formatMinutes(record.minutes)}</strong></div>
                       <p>{record.description}</p>
                       <small>来自 {record.sourceSheet} · 第 {record.sourceRow} 行</small>
@@ -193,9 +190,9 @@ export default function InsightDrawer({
                 <div className="net-equation">
                   <div><span>加班</span><strong>{formatMinutes(result.summary.extraMinutes)}</strong></div>
                   <b>−</b>
-                  <div><span>调休</span><strong>{formatMinutes(result.summary.compensatoryLeaveMinutes)}</strong></div>
+                  <div><span>实际扣减</span><strong>{result.summary.compensatoryLeaveMinutes === null ? "待核对" : formatMinutes(result.summary.compensatoryLeaveMinutes)}</strong></div>
                   <b>=</b>
-                  <div className="highlight"><span>净剩</span><strong>{formatMinutes(result.summary.netExtraMinutes)}</strong></div>
+                  <div className="highlight"><span>净剩</span><strong>{result.summary.netExtraMinutes === null ? "待核对" : formatMinutes(result.summary.netExtraMinutes)}</strong></div>
                 </div>
               </section>
               <section className="insight-section">
@@ -205,9 +202,9 @@ export default function InsightDrawer({
                     <DateButton
                       key={day.workDate}
                       date={day.workDate}
-                      title={(delta >= 0 ? "增加 " : "减少 ") + formatMinutes(Math.abs(delta)) + " · 余额 " + formatMinutes(balance)}
-                      value={(delta >= 0 ? "+" : "-") + formatMinutes(Math.abs(delta))}
-                      tone={delta >= 0 ? "positive" : "negative"}
+                      title={(delta === null ? "当日扣减待核对" : (delta >= 0 ? "增加 " : "减少 ") + formatMinutes(Math.abs(delta))) + " · 余额 " + (balance === null ? "待核对" : formatMinutes(balance))}
+                      value={delta === null ? "待核对" : (delta >= 0 ? "+" : "-") + formatMinutes(Math.abs(delta))}
+                      tone={delta === null ? "warning" : delta >= 0 ? "positive" : "negative"}
                       onClick={() => onSelectDay(day.workDate)}
                     />
                   ))}
@@ -229,7 +226,7 @@ export default function InsightDrawer({
                 <h3>异常日期</h3>
                 <div className="balance-list">
                   {abnormalDays.map((day) => (
-                    <DateButton key={day.workDate} date={day.workDate} title={day.dayType} value={day.status} tone="warning" onClick={() => onSelectDay(day.workDate)} />
+                    <DateButton key={day.workDate} date={day.workDate} title={day.dayType} value={day.requiresReview ? "调休待核对" : day.status} tone="warning" onClick={() => onSelectDay(day.workDate)} />
                   ))}
                 </div>
               </section>
