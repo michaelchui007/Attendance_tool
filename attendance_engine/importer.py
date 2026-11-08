@@ -121,6 +121,9 @@ def merge_workbooks(
                                'sourceSheet': record.source_sheet, 'sourceRow': record.source_row}]
         originals.append((ident, source))
     identities = {(source.employee_name, source.employee_account) for _, source in originals}
+    if len(originals) > 1 and any(not source.employee_account.strip() for _, source in originals):
+        raise ValueError('多个报表缺少员工账号，不能仅凭姓名确认同一员工；请检查源报表身份字段：'
+                         + '、'.join(item['name'] for item in files if item['duplicateOf'] is None))
     if len(identities) != 1:
         raise ValueError('所选报表包含不同员工，不能合并；请检查文件：' + '、'.join(item['name'] for item in files))
     start = min(source.start_date for _, source in originals)

@@ -50,10 +50,14 @@ Windows 验证使用 GitHub Actions Windows runner，构建并安装真实 NSIS 
 
 测试依赖只安装在 CI 环境，不随应用分发。测试工作流上传检查报告、日志和截图；浏览器模拟不能代替原生文件选择、安装或 Windows 编码检查。具体执行结论以对应运行报告为准。
 
+WebView2 150及以后会忽略管理员进程通过环境变量提供的调试参数。Windows CI通过经校验的gsudo以Medium完整性运行测试，并记录实际权限；先启动已安装应用，再由EdgeDriver附加本机调试端口。生产程序不包含测试调试开关，也不通过修改系统HKLM策略绕过该限制。
+
 官方参考：
 
 - `https://v2.tauri.app/develop/tests/webdriver/`
 - `https://learn.microsoft.com/en-us/microsoft-edge/webview2/how-to/webdriver`
+- `https://github.com/MicrosoftEdge/WebView2Feedback/issues/5645`
+- `https://github.com/tauri-apps/tauri/blob/dev/.github/workflows/test-api-e2e.yml`
 
 ## 发布
 

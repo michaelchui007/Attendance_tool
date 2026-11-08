@@ -346,3 +346,18 @@ def test_reset_times_restores_invalid_source_and_keeps_manual_deduction():
     assert day.last_check_out == datetime(2026, 11, 2, 9)
     assert day.actual_effective_minutes is None
     assert day.compensatory_leave_minutes == 480 and day.net_extra_minutes == -480
+
+
+def test_multiple_sources_need_account_but_single_and_duplicates_remain_compatible(tmp_path):
+    """多份独立来源不能仅按姓名合并；单来源缺账号仍可单独处理。"""
+    first = make_book(tmp_path, '无账号十一月.xlsx', date(2026, 11, 1), date(2026, 11, 30), account='')
+    second = make_book(tmp_path, '同姓名十二月.xlsx', date(2026, 12, 1), date(2026, 12, 31), account='')
+    with pytest.raises(ValueError, match='不能仅凭姓名'):
+        merge_workbooks([str(first), str(second)])
+    single, _ = merge_workbooks([str(first)])
+    assert single.employee_account == ''
+    duplicate = tmp_path / '无账号副本.xlsx'
+    duplicate.write_bytes(first.read_bytes())
+    deduplicated, _ = merge_workbooks([str(first), str(duplicate)])
+    assert deduplicated.employee_account == ''
+    assert deduplicated.files[1]['duplicateOf'] == deduplicated.files[0]['id']

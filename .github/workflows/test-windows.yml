@@ -60,6 +60,8 @@ jobs:
           ./scripts/windows_build_retry_tests.ps1
           ./scripts/build_windows.ps1
           if ($LASTEXITCODE -ne 0) { throw "Windows build failed." }
+          node --test apps/desktop/tests/frontend.test.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Frontend state tests failed." }
           cargo test --release --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --lib
           if ($LASTEXITCODE -ne 0) { throw "Rust tests failed." }
       - name: Preserve successful compilation before GUI validation
