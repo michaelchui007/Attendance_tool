@@ -35,6 +35,12 @@ def _format_minutes(value: int | None) -> str:
     return f"{sign}{hours}小时{minutes:02d}分钟"
 
 
+def _resolution_label(status: str) -> str:
+    """将处理状态转换为用户可读标签，原始缺卡状态单独保留。"""
+    return {'pending': '待处理', 'resolved': '已处理', 'normal': '无需处理',
+            'notImported': '未导入'}.get(status, status)
+
+
 def _style_header(ws, row: int, start_col: int, end_col: int) -> None:
     for cell in ws.iter_cols(min_col=start_col, max_col=end_col, min_row=row, max_row=row):
         c = cell[0]
@@ -102,7 +108,7 @@ def export_report(report: AttendanceReport, export_root: str | Path | None = Non
         "加班时长", _format_minutes(report.extra_minutes),
         "实际调休扣减", _format_minutes(report.compensatory_leave_minutes),
         "净剩加班时长", _format_minutes(report.net_extra_minutes),
-        "异常天数", report.abnormal_day_count,
+        "待处理天数", report.attention_day_count,
     ])
     for cell in summary[4]:
         cell.fill = _KPI_FILL
@@ -117,14 +123,14 @@ def export_report(report: AttendanceReport, export_root: str | Path | None = Non
     summary["B5"].alignment = Alignment(vertical="center")
     summary.append([
         "日期", "日期类型", "状态", "应计标准", "实际有效", "加班时长",
-        "实际调休扣减", "净剩加班时长", "最早上班", "最晚下班",
+        "实际调休扣减", "净剩加班时长", "最早上班", "最晚下班", "处理状态", "待处理原因",
     ])
-    _style_header(summary, 6, 1, 10)
+    _style_header(summary, 6, 1, 12)
     for day in report.days:
         summary.append([
             day.work_date,
             day.day_type.value,
-            day.status.value + ("（待核对）" if day.requires_review else ""),
+            day.status.value + ("（原始资料有核对提示）" if day.requires_review else ""),
             _format_minutes(day.required_standard_minutes),
             _format_minutes(day.actual_effective_minutes),
             _format_minutes(day.extra_minutes),
@@ -132,16 +138,18 @@ def export_report(report: AttendanceReport, export_root: str | Path | None = Non
             _format_minutes(day.net_extra_minutes),
             day.first_check_in,
             day.last_check_out,
+            _resolution_label(day.resolution_status),
+            "；".join(item['message'] for item in day.attention_reasons),
         ])
     for row in range(7, summary.max_row + 1):
         summary.cell(row, 1).number_format = "yyyy-mm-dd"
         summary.cell(row, 9).number_format = "yyyy-mm-dd hh:mm"
         summary.cell(row, 10).number_format = "yyyy-mm-dd hh:mm"
     summary.freeze_panes = "A7"
-    summary.auto_filter.ref = f"A6:J{summary.max_row}"
+    summary.auto_filter.ref = f"A6:L{summary.max_row}"
     summary.conditional_formatting.add(
         f"C7:C{summary.max_row}",
-        FormulaRule(formula=["C7<>\"正常\""], fill=_DANGER_FILL),
+        FormulaRule(formula=["K7=\"待处理\""], fill=_DANGER_FILL),
     )
     _autofit(summary)
 
@@ -153,6 +161,7 @@ def export_report(report: AttendanceReport, export_root: str | Path | None = Non
         "实际调休扣减", "净剩加班时长", "计算说明", "当日申请量",
         "原始最早上班", "原始最晚下班", "手动修订", "需要核对",
         "自动调休扣减", "手动扣减", "修订原因", "生效上班", "生效下班", "午休开始", "午休结束", "作息来源", "已导入", "来源文件标识",
+        "处理状态", "待处理原因", "建议操作",
     ]
     details.append(headers)
     _style_header(details, 1, 1, len(headers))
@@ -182,6 +191,9 @@ def export_report(report: AttendanceReport, export_root: str | Path | None = Non
             day.schedule.get('workdayStart'), day.schedule.get('workdayEnd'),
             day.schedule.get('lunchStart'), day.schedule.get('lunchEnd'), day.schedule_source,
             "是" if day.covered else "否", "；".join(day.source_ids),
+            _resolution_label(day.resolution_status),
+            "；".join(item['message'] for item in day.attention_reasons),
+            "；".join(item['action'] for item in day.attention_reasons),
         ])
     for row in range(2, details.max_row + 1):
         details.cell(row, 1).number_format = "yyyy-mm-dd"
@@ -194,10 +206,10 @@ def export_report(report: AttendanceReport, export_root: str | Path | None = Non
             if col not in {6, 7}:
                 details.cell(row, col).number_format = "0.00"
     details.freeze_panes = "A2"
-    details.auto_filter.ref = f"A1:AE{details.max_row}"
+    details.auto_filter.ref = f"A1:AH{details.max_row}"
     details.conditional_formatting.add(
         f"D2:D{details.max_row}",
-        FormulaRule(formula=["D2<>\"正常\""], fill=_WARNING_FILL),
+        FormulaRule(formula=["AF2=\"待处理\""], fill=_WARNING_FILL),
     )
     _autofit(details)
     details.column_dimensions["P"].width = 48
@@ -268,12 +280,12 @@ def export_report(report: AttendanceReport, export_root: str | Path | None = Non
     _style_header(sources_sheet, 1, 1, 7)
     _autofit(sources_sheet)
     month_sheet = wb.create_sheet("分月汇总")
-    month_sheet.append(["月份", "应计标准工时", "实际有效工时", "加班", "实际扣减", "净剩加班", "数据不完整"])
+    month_sheet.append(["月份", "应计标准工时", "实际有效工时", "加班", "实际扣减", "净剩加班", "数据不完整", "待处理天数", "已处理天数"])
     for month in report.monthly_summaries():
         month_sheet.append([month['month'], *[_format_minutes(month[key]) for key in
                            ('requiredStandardMinutes', 'actualEffectiveMinutes', 'extraMinutes', 'compensatoryLeaveMinutes', 'netExtraMinutes')],
-                           "是" if month['isPartial'] else "否"])
-    _style_header(month_sheet, 1, 1, 7)
+                           "是" if month['isPartial'] else "否", month['attentionDayCount'], month['resolvedDayCount']])
+    _style_header(month_sheet, 1, 1, 9)
     _autofit(month_sheet)
 
     # 先写隐藏临时文件，取消或写入失败不会产生貌似完整的结果工作簿。

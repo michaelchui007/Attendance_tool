@@ -2,7 +2,7 @@
 name = "attendance-desktop"
 version = "0.3.1"
 description = "Cross-platform attendance calculator"
-authors = ["Attendance Tool"]
+authors = ["MichaelChui"]
 edition = "2021"
 
 [lib]

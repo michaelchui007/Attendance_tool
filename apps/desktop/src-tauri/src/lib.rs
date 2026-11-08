@@ -212,16 +212,29 @@ async fn calculate_attendance(
     if paths.is_empty() { return Err("请至少选择一个 Excel 报表".into()); }
     let output = if output_root_utf16.is_some() { Some(resolve_path(None, output_root_utf16)?) }
         else { output_root.filter(|value| !value.is_empty()) };
-    let mut guard = state.connection.lock().await;
-    if state.child.lock().map_err(|_| "计算引擎状态异常")?.is_none() { *guard = None; }
-    if guard.is_none() { *guard = Some(spawn_engine(&app)?); }
-    let generation = state.generation.load(Ordering::SeqCst);
     let request = json!({
-        "requestId": state.request_id.fetch_add(1, Ordering::SeqCst) + 1, "command": "calculate",
+        "command": "calculate",
         "inputPaths": paths, "outputRoot": output, "settings": settings, "expectedEmployee": expected_employee,
         "overrides": overrides.unwrap_or_else(|| json!([])), "sourceChoices": source_choices.unwrap_or_else(|| json!({})),
         "lunchStart": lunch_start, "lunchEnd": lunch_end,
     });
+    run_engine_request(&app, &state, request).await
+}
+
+/// 串行处理计算与工作簿配置请求，共享无损编码和进程恢复。
+///
+/// Args:
+///     app: 当前桌面应用，用于启动引擎与发送进度。
+///     state: 应用生命周期内的引擎连接。
+///     request: 白名单命令构造的请求，不接受任意命令执行。
+/// Returns:
+///     引擎确认的结果或可展示的错误。
+async fn run_engine_request(app: &AppHandle, state: &EngineState, mut request: Value) -> Result<Value, String> {
+    let mut guard = state.connection.lock().await;
+    if state.child.lock().map_err(|_| "计算引擎状态异常")?.is_none() { *guard = None; }
+    if guard.is_none() { *guard = Some(spawn_engine(&app)?); }
+    let generation = state.generation.load(Ordering::SeqCst);
+    request["requestId"] = json!(state.request_id.fetch_add(1, Ordering::SeqCst) + 1);
     let response = send_calculation_request(&app, &state, guard.as_mut().expect("engine initialized"), request, generation).await;
     match response {
         Ok(payload) => {
@@ -231,6 +244,44 @@ async fn calculate_attendance(
         }
         Err(error) => { stop_engine(&state); *guard = None; Err(error) }
     }
+}
+
+/// 将工作簿列表按原生UTF-16优先规则还原，不猜测损坏路径。
+fn workbook_paths(paths: Option<Vec<String>>, utf16: Option<Vec<Vec<u16>>>) -> Result<Vec<String>, String> {
+    let result = if let Some(items) = utf16 {
+        items.into_iter().map(|units| resolve_path(None, Some(units))).collect::<Result<Vec<_>, _>>()?
+    } else { paths.unwrap_or_default() };
+    if result.is_empty() || result.iter().any(|path| path.trim().is_empty()) {
+        return Err("请至少选择一个有效的源报表".into());
+    }
+    Ok(result)
+}
+
+/// 只读检查源Excel是否携带可用配置，是否采用由用户在界面选择。
+#[tauri::command]
+async fn inspect_workbook_state(
+    app: AppHandle, state: State<'_, EngineState>,
+    input_paths: Option<Vec<String>>, input_paths_utf16: Option<Vec<Vec<u16>>>,
+) -> Result<Value, String> {
+    let paths = workbook_paths(input_paths, input_paths_utf16)?;
+    run_engine_request(&app, &state, json!({
+        "command": "inspect_workbook_state", "inputPaths": paths,
+    })).await
+}
+
+/// 用户明确保存时，把已核对的规则与修订写入源文件专用工作表。
+#[tauri::command]
+async fn save_workbook_state(
+    app: AppHandle, state: State<'_, EngineState>,
+    input_paths: Option<Vec<String>>, input_paths_utf16: Option<Vec<Vec<u16>>>,
+    settings: Value, overrides: Option<Value>, expected_employee: Value, expected_sources: Value,
+) -> Result<Value, String> {
+    let paths = workbook_paths(input_paths, input_paths_utf16)?;
+    run_engine_request(&app, &state, json!({
+        "command": "save_workbook_state", "inputPaths": paths,
+        "settings": settings, "overrides": overrides.unwrap_or_else(|| json!([])),
+        "expectedEmployee": expected_employee, "expectedSources": expected_sources,
+    })).await
 }
 
 /// 取消当前任务；下一次统计会重新启动引擎。
@@ -277,7 +328,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![pick_excel_file, pick_excel_files, pick_output_directory, validate_input_file, calculate_attendance, cancel_calculation])
+        .invoke_handler(tauri::generate_handler![pick_excel_file, pick_excel_files, pick_output_directory, validate_input_file, calculate_attendance, cancel_calculation, inspect_workbook_state, save_workbook_state])
         .build(tauri::generate_context!())
         .expect("error while building attendance desktop application")
         .run(|app, event| {

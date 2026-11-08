@@ -29,7 +29,7 @@ export function workDateFor(timestamp: string): string {
 export function validateOverride(value: DayOverride): string {
   if (value.compensatoryLeaveMinutes !== undefined && value.compensatoryLeaveMinutes !== null) {
     if (!Number.isInteger(value.compensatoryLeaveMinutes) || value.compensatoryLeaveMinutes < 0 || value.compensatoryLeaveMinutes > 1440) return '调休扣减须为 0～24 小时，并精确到分钟。';
-    if (!value.leaveReason?.trim()) return '请填写手动扣减原因。';
+    if (value.leaveReason != null && typeof value.leaveReason !== 'string') return '手动扣减说明格式无效。';
   }
   if (value.schedule) { const problem = validateSchedule(value.schedule); if (problem) return problem; }
   if (value.resetTimes === true) return '';
@@ -62,5 +62,14 @@ export function leaveBreakdown(days: AttendanceDay[]) {
 /** 仅将需要用户处理的日期列为待处理，休息日无记录不制造告警。 */
 export function needsAttention(day: AttendanceDay): boolean {
   if (day.covered === false) return false;
+  if (typeof day.needsAttention === 'boolean') return day.needsAttention;
   return day.requiresReview || (day.status !== "正常" && (day.requiredStandardMinutes > 0 || day.records.length > 0 || Boolean(day.firstCheckIn || day.lastCheckOut)));
+}
+
+/** 待处理标签描述当前任务；原始缺卡状态单独保留在详情中。 */
+export function attentionLabel(day: AttendanceDay): string {
+  if (day.covered === false) return '未导入';
+  if (day.resolutionStatus === 'resolved') return '已处理';
+  if (needsAttention(day)) return day.attentionReasons?.map(reason => reason.message).join('；') || (day.requiresReview ? '调休信息待核对' : day.status);
+  return day.requiredStandardMinutes === 0 ? '休息日' : '正常';
 }

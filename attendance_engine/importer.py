@@ -4,13 +4,13 @@ from __future__ import annotations
 from collections import OrderedDict, defaultdict
 from copy import deepcopy
 from datetime import date, timedelta
-from hashlib import sha256
 from itertools import combinations
 from pathlib import Path
 from typing import Callable
 
 from .models import AttendanceSource, PunchType
 from .parser import parse_attendance_workbook
+from .portable import workbook_fingerprint
 
 
 def dates_between(start: date, end: date):
@@ -35,7 +35,8 @@ class SourceCache:
         if cached and cached[0] == fingerprint:
             self.entries.move_to_end(key)
             return deepcopy(cached[2]), cached[1], True
-        digest = sha256(path.read_bytes()).hexdigest()[:16]
+        # 配置工作表写入不改变源内容身份，跨设备重算仍可追溯。
+        digest = workbook_fingerprint(path.read_bytes())[:16]
         source = parse_attendance_workbook(path)
         # 解析期间文件变化时不保存混合版本供后续重算使用。
         after = path.stat()

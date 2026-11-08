@@ -129,6 +129,9 @@ class DailyAttendanceResult:
     auto_compensatory_leave_minutes: int | None = 0
     is_leave_edited: bool = False
     leave_reason: str = ""
+    attention_reasons: list[dict[str, str]] = field(default_factory=list)
+    needs_attention: bool = False
+    resolution_status: str = "normal"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -162,6 +165,9 @@ class DailyAttendanceResult:
             "autoCompensatoryLeaveMinutes": self.auto_compensatory_leave_minutes,
             "isLeaveEdited": self.is_leave_edited,
             "leaveReason": self.leave_reason,
+            "attentionReasons": self.attention_reasons,
+            "needsAttention": self.needs_attention,
+            "resolutionStatus": self.resolution_status,
         }
 
 
@@ -207,6 +213,16 @@ class AttendanceReport:
     def abnormal_day_count(self) -> int:
         return sum(day.covered and (day.status is not CalculationStatus.SUCCESS or day.requires_review) for day in self.days)
 
+    @property
+    def attention_day_count(self) -> int:
+        """统计尚未处理的日期，不将已确认的原始异常重新作为待办。"""
+        return sum(day.covered and day.needs_attention for day in self.days)
+
+    @property
+    def resolved_day_count(self) -> int:
+        """统计已经通过有效人工修订处理的日期。"""
+        return sum(day.covered and day.resolution_status == 'resolved' for day in self.days)
+
     def summary(self) -> dict[str, Any]:
         """汇总已覆盖日期，缺失月份显式标记而非当作零出勤。"""
         return {
@@ -217,6 +233,8 @@ class AttendanceReport:
             "netExtraMinutes": self.net_extra_minutes,
             "normalDayCount": sum(day.covered for day in self.days) - self.abnormal_day_count,
             "abnormalDayCount": self.abnormal_day_count,
+            "attentionDayCount": self.attention_day_count,
+            "resolvedDayCount": self.resolved_day_count,
             "leaveRequestedMinutes": self.leave_requested_minutes,
             "requiresReview": any(day.requires_review for day in self.days if day.covered),
             "isPartial": any(not day.covered for day in self.days),

@@ -165,6 +165,70 @@ def test_engine(engine_path: Path, root: Path) -> dict:
     return result
 
 
+def test_portable_state(engine_path: Path, root: Path) -> dict:
+    """用冻结引擎验证无原因扣减、处理状态及跨目录恢复。
+
+    Args:
+        engine_path: 已安装的计算引擎。
+        root: 仅含匿名样本的测试目录。
+
+    Returns:
+        配置写入、备份及新进程恢复的检查记录。
+    """
+    from shutil import copyfile
+    from zipfile import ZipFile
+
+    source = root / "便携配置" / "十一月公司调休.xlsx"
+    make_report(source, 11)
+    workbook = load_workbook(source)
+    for row in workbook["打卡详情"].iter_rows(min_row=5):
+        if str(row[0].value) in {"2026/11/02", "2026/11/03"}:
+            row[8].value = "--"
+            row[9].value = "缺卡"
+    workbook.save(source)
+    workbook.close()
+    original = source.read_bytes()
+    with ZipFile(source) as archive:
+        sheets = {name: archive.read(name) for name in archive.namelist() if name.startswith('xl/worksheets/')}
+    settings = {"standardMinutes": 480, "workdayStart": "09:00", "workdayEnd": "18:30",
+                "lunchStart": "12:00", "lunchEnd": "13:30", "dateRules": []}
+    overrides = [{"workDate": f"2026-11-0{day}", "compensatoryLeaveMinutes": 480} for day in (2, 3)]
+    engine = Engine(engine_path, root)
+    try:
+        calculated, _ = engine.request({"requestId": 101, "command": "calculate", "inputPaths": [str(source)],
+                                       "settings": settings, "overrides": overrides, "outputRoot": str(root / '便携导出')})
+        days = [day for day in calculated['days'] if day['workDate'] in {'2026-11-02', '2026-11-03'}]
+        assert all(day['netExtraMinutes'] == -480 and day['leaveReason'] == '手动调整' for day in days)
+        assert all(not day['needsAttention'] and day['resolutionStatus'] == 'resolved' and day['actualEffectiveMinutes'] is None for day in days)
+        saved, _ = engine.request({"requestId": 102, "command": "save_workbook_state", "inputPaths": [str(source)],
+                                  "settings": settings, "overrides": overrides, "expectedEmployee": calculated['employee'],
+                                  "expectedSources": calculated['sources']})
+        assert saved['allSaved'], saved
+        assert Path(saved['files'][0]['backupPath']).read_bytes() == original
+        with ZipFile(source) as archive:
+            assert all(archive.read(name) == content for name, content in sheets.items())
+    finally:
+        engine.close()
+    moved = root / '另一台电脑' / '改名后的考勤.xlsx'
+    moved.parent.mkdir(parents=True, exist_ok=True)
+    copyfile(source, moved)
+    other = Engine(engine_path, root)
+    try:
+        inspected, _ = other.request({"requestId": 103, "command": "inspect_workbook_state", "inputPaths": [str(moved)]})
+        assert inspected['files'][0]['status'] == 'valid', inspected
+        state = inspected['files'][0]['state']
+        restored, _ = other.request({"requestId": 104, "command": "calculate", "inputPaths": [str(moved)],
+                                    "settings": state['settings'], "overrides": state['overrides'],
+                                    "expectedEmployee": calculated['employee'], "outputRoot": str(root / '便携恢复导出')})
+        restored_days = [day for day in restored['days'] if day['workDate'] in {'2026-11-02', '2026-11-03'}]
+        assert all(day['netExtraMinutes'] == -480 and not day['needsAttention'] for day in restored_days)
+        assert restored['sources'][0]['id'] == calculated['sources'][0]['id']
+    finally:
+        other.close()
+    return {'optionalReason': True, 'handledDaysRemoved': True, 'backupMatchesOriginal': True,
+            'rawSheetsUnchanged': True, 'newProcessAndPathRestore': True}
+
+
 def visible_console_windows(pids: set[int]) -> list[int]:
     """枚举可见窗口，定位应用进程树产生的控制台窗口。"""
     user32 = ctypes.windll.user32
@@ -364,6 +428,40 @@ def test_gui(application: Path, driver_path: Path, root: Path) -> dict:
         wait.until(lambda d: "2026-03-28" in d.find_element(By.CSS_SELECTOR, ".result-heading").text)
         assert "源文件不存在" not in browser.find_element(By.TAG_NAME, "body").text
         checked.append("拖放后真实统计")
+        # 留空原因保存、写回源配置，再模拟关闭页面后重新导入选择配置。
+        from selenium.webdriver.support.ui import Select
+        target_row = "//section[@id='daily-workspace']//tbody/tr[.//strong[contains(.,'01-05')]]"
+        browser.find_element(By.XPATH, target_row).click()
+        browser.find_element(By.XPATH, "//button[normalize-space(.)='编辑考勤']").click()
+        Select(browser.find_element(By.CSS_SELECTOR, '[aria-label="扣减方式"]')).select_by_value('manual')
+        deduction = browser.find_element(By.CSS_SELECTOR, '[aria-label="扣减调休（小时）"]')
+        deduction.clear()
+        deduction.send_keys('8')
+        browser.find_element(By.CSS_SELECTOR, '.editing-toolbar .primary-button').click()
+        wait.until(lambda d: '手动调整' in d.find_element(By.CSS_SELECTOR, '.detail-panel').text)
+        assert '已处理' in browser.find_element(By.CSS_SELECTOR, '.detail-panel').text
+        checked.append('真实界面原因留空保存并标记已处理')
+        browser.find_element(By.XPATH, "//button[normalize-space(.)='保存配置到源Excel']").click()
+        wait.until(lambda d: '保存成功' in d.find_element(By.CSS_SELECTOR, '[aria-label="源文件保存结果"]').text)
+        assert '备份' in browser.find_element(By.CSS_SELECTOR, '[aria-label="源文件保存结果"]').text
+        browser.refresh()
+        wait.until(lambda d: d.find_elements(By.XPATH, "//button[normalize-space(.)='添加报表']"))
+        dialog_errors.clear()
+        selector = threading.Thread(target=select_files, daemon=True)
+        selector.start()
+        browser.find_element(By.XPATH, "//button[normalize-space(.)='添加报表']").click()
+        selector.join(35)
+        assert not dialog_errors and not selector.is_alive(), dialog_errors
+        wait.until(lambda d: d.find_elements(By.XPATH, "//h2[normalize-space(.)='选择本次统计的配置']"))
+        browser.save_screenshot(str(root / 'workbook-config-choice.png'))
+        browser.find_element(By.XPATH, "//button[normalize-space(.)='使用 Excel 配置']").click()
+        browser.find_element(By.CSS_SELECTOR, '.import-actions .primary-button').click()
+        wait.until(lambda d: '测试员工' in d.find_element(By.CSS_SELECTOR, '.result-heading').text)
+        browser.find_element(By.XPATH, target_row).click()
+        assert '手动调整' in browser.find_element(By.CSS_SELECTOR, '.detail-panel').text
+        assert '已处理' in browser.find_element(By.CSS_SELECTOR, '.detail-panel').text
+        checked.append('真实界面备份写回源Excel并重新导入选择恢复')
+        browser.save_screenshot(str(root / 'restored-manual-adjustment.png'))
         tree = set()
         for process in processes:
             tree.add(process.pid)
@@ -453,7 +551,8 @@ def main() -> None:
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     check_pe_gui(args.app)
-    report = {"peSubsystem": "Windows GUI", "engine": test_engine(args.engine, args.output)}
+    report = {"peSubsystem": "Windows GUI", "engine": test_engine(args.engine, args.output),
+              "portableState": test_portable_state(args.engine, args.output)}
     (args.output / "engine-results.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     if args.driver:
         report["gui"] = test_gui(args.app, args.driver, args.output)

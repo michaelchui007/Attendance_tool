@@ -30,7 +30,7 @@ export interface DayOverride {
   firstCheckIn?: string | null;
   lastCheckOut?: string | null;
   compensatoryLeaveMinutes?: number | null;
-  leaveReason?: string;
+  leaveReason?: string | null;
   schedule?: Schedule | null;
 }
 
@@ -51,6 +51,9 @@ export interface AttendanceDay {
   originalLastCheckOut: string | null;
   isEdited: boolean;
   requiresReview: boolean;
+  needsAttention?: boolean;
+  attentionReasons?: Array<{ code: string; message: string; action: string }>;
+  resolutionStatus?: 'pending' | 'resolved' | 'normal' | 'notImported';
   covered: boolean;
   sourceIds: string[];
   schedule: Schedule & { standardMinutes: number; netScheduleMinutes: number };
@@ -90,6 +93,8 @@ export interface AttendanceResult {
     requiresReview: boolean;
     normalDayCount: number;
     abnormalDayCount: number;
+    attentionDayCount?: number;
+    resolvedDayCount?: number;
     isPartial?: boolean;
   };
   days: AttendanceDay[];
@@ -121,3 +126,9 @@ export interface NativePathSelection {
   path: string | null;
   pathUtf16: number[] | null;
 }
+
+/** 工作簿携带的数据只在用户明确选择后应用，不执行其中任何内容。 */
+export interface WorkbookState { schemaVersion: number; settings: CalculationSettings; overrides: DayOverride[]; savedAt: string; }
+export interface WorkbookStateFile { inputPath: string; path: string; sourceId?: string; employee?: { name: string; account: string }; period?: { startDate: string; endDate: string }; status: 'none' | 'valid' | 'invalid'; state: WorkbookState | null; message: string; }
+export interface WorkbookStateInspection { success: boolean; files: WorkbookStateFile[]; }
+export interface WorkbookStateSaveResult { success: boolean; allSaved: boolean; files: Array<{ inputPath: string; path: string; success: boolean; backupPath?: string; error?: string; sourceId?: string }>; }

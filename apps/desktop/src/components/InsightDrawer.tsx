@@ -1,6 +1,6 @@
 import type { AttendanceResult } from "../types";
 import { formatMinutes } from "../formatters";
-import { leaveBreakdown, needsAttention } from "../attendanceState";
+import { attentionLabel, leaveBreakdown, needsAttention } from "../attendanceState";
 
 export type InsightKey = "required" | "effective" | "overtime" | "leave" | "net" | "abnormal" | "calendar";
 
@@ -83,7 +83,7 @@ export default function InsightDrawer({
 
   const abnormalGroups = Array.from(
     abnormalDays.reduce((groups, day) => {
-      const status = day.requiresReview ? "调休待核对" : day.status;
+      const status = attentionLabel(day);
       groups.set(status, (groups.get(status) || 0) + 1);
       return groups;
     }, new Map<string, number>()),
@@ -222,17 +222,17 @@ export default function InsightDrawer({
           {active === "abnormal" && (
             <>
               <section className="insight-section">
-                <h3>异常类型</h3>
+                <h3>需要处理的事项</h3>
                 <div className="breakdown-list">
                   {abnormalGroups.map(([status, count]) => <BreakdownRow key={status} label={status} value={count + " 天"} />)}
                 </div>
-                <button className="insight-action" onClick={onShowAbnormal}>在每日明细中查看全部异常</button>
+                <button className="insight-action" onClick={onShowAbnormal}>在每日明细中查看待处理事项</button>
               </section>
               <section className="insight-section">
-                <h3>异常日期</h3>
+                <h3>待处理日期</h3>
                 <div className="balance-list">
                   {abnormalDays.map((day) => (
-                    <DateButton key={day.workDate} date={day.workDate} title={day.dayType} value={day.requiresReview ? "调休待核对" : day.status} tone="warning" onClick={() => onSelectDay(day.workDate)} />
+                    <DateButton key={day.workDate} date={day.workDate} title={day.attentionReasons?.map(reason => reason.action).join("；") || day.dayType} value={attentionLabel(day)} tone="warning" onClick={() => onSelectDay(day.workDate)} />
                   ))}
                 </div>
               </section>

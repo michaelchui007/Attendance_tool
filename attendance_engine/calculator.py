@@ -152,13 +152,82 @@ def _parse_overrides(source: AttendanceSource, overrides: list[dict] | None) -> 
         if manual is not None:
             minute_value(manual, '手动调休扣减', allow_zero=True)
             reason = item.get('leaveReason')
-            if not isinstance(reason, str) or not reason.strip():
-                raise ValueError('手动调休扣减须填写修订原因')
-            change['leaveReason'] = reason.strip()
+            if reason is not None and not isinstance(reason, str):
+                raise ValueError('手动扣减原因须为文本或空值')
+            change['leaveReason'] = (reason or '').strip() or '手动调整'
         if item.get('schedule') is not None:
             change['schedule'] = validate_schedule(item['schedule'])
         result[work_date] = change
     return result
+
+
+def _set_attention_state(day: DailyAttendanceResult) -> None:
+    """将仍需用户处理的任务与原始异常事实分开记录。
+
+    Args:
+        day: 已完成计算或明确无法计算的单日结果，原始状态不会被修改。
+
+    手动指定最终扣减表示用户已处理当天的缺卡/申请扣减问题；它不能
+    解决来源冲突或倒置时间。只修改作息不会消除缺卡待办。
+    """
+    reasons: list[dict[str, str]] = []
+    if not day.covered:
+        day.resolution_status = 'notImported'
+        day.attention_reasons = []
+        day.needs_attention = False
+        return
+    if day.status is CalculationStatus.SOURCE_CONFLICT:
+        reasons.append({
+            'code': 'sourceConflict',
+            'message': '多个报表对当天的打卡或调休申请记录不一致',
+            'action': '选择当天采用的来源报表，然后重新统计',
+        })
+    else:
+        if day.status is CalculationStatus.INVALID_TIME_RANGE:
+            reasons.append({
+                'code': 'invalidTimeRange',
+                'message': '下班时间不晚于上班时间，实际工时无法计算',
+                'action': '查看原始打卡，并修正上下班日期和时间',
+            })
+        elif not day.is_leave_edited and day.status is not CalculationStatus.SUCCESS and (
+            day.required_standard_minutes > 0 or day.records or day.first_check_in or day.last_check_out
+        ):
+            missing = {
+                CalculationStatus.MISSING_CHECK_IN: ('missingCheckIn', '缺少上班打卡，实际工时无法计算'),
+                CalculationStatus.MISSING_CHECK_OUT: ('missingCheckOut', '缺少下班打卡，实际工时无法计算'),
+                CalculationStatus.MISSING_BOTH: ('missingBoth', '缺少上下班打卡，实际工时无法计算'),
+            }
+            code, message = missing[day.status]
+            reasons.append({
+                'code': code, 'message': message,
+                'action': '补齐打卡时间；如为公司安排调休，可手动指定当天扣减',
+            })
+        if day.requires_review and not day.is_leave_edited:
+            if day.leave_requested_minutes is None:
+                code = 'unknownLeave'
+                message = '调休申请的每日时长无法确定，扣减与净额尚未计算'
+            elif day.leave_requested_minutes and day.actual_effective_minutes is not None and (
+                day.actual_effective_minutes >= day.required_standard_minutes > 0
+            ):
+                code = 'workLeaveConflict'
+                message = '已达到标准工时，但当天仍有调休申请'
+            else:
+                code = 'reviewLeave'
+                message = '调休申请缺少完整区间或存在来源提示，需要核对扣减'
+            reasons.append({
+                'code': code, 'message': message,
+                'action': '查看原始申请与计算说明，确认后手动指定扣减或修正来源',
+            })
+    day.attention_reasons = reasons
+    day.needs_attention = bool(reasons)
+    original_invalid = (day.original_first_check_in is None or day.original_last_check_out is None or
+                        day.original_last_check_out <= day.original_first_check_in)
+    if reasons:
+        day.resolution_status = 'pending'
+    elif day.is_leave_edited or (day.is_edited and original_invalid and day.status is CalculationStatus.SUCCESS):
+        day.resolution_status = 'resolved'
+    else:
+        day.resolution_status = 'normal'
 
 
 def calculate_attendance(
@@ -236,6 +305,7 @@ def calculate_attendance(
             day.auto_compensatory_leave_minutes = None
             day.requires_review = covered
             day.messages = ['日期尚未导入，不计入已覆盖期间汇总'] if not covered else ['来源记录冲突，请先选择当天采用的报表版本']
+            _set_attention_state(day)
             results.append(day)
             continue
         if day.is_edited:
@@ -271,6 +341,7 @@ def calculate_attendance(
             day.is_leave_edited = day.is_edited = True
             day.leave_reason = change['leaveReason']
             messages.append(f'手动指定扣减 {manual} 分钟，替代自动值；原因：{day.leave_reason}')
+            messages.append('当天扣减已手动处理，缺卡和原始申请提示保留用于追溯')
         if change.get('schedule') is not None:
             day.is_edited = True
         if schedule['netScheduleMinutes'] != standard:
@@ -279,6 +350,7 @@ def calculate_attendance(
             messages.append(f'扣除午休 {day.lunch_deduction_minutes} 分钟')
         if not messages:
             messages.append('按实际打卡计算，不加计地点福利')
+        _set_attention_state(day)
         results.append(day)
     return AttendanceReport(source=source, days=results, rules=rules,
                             calendar_info=holiday_calendar.to_dict() if holiday_calendar is not None else {'years': [], 'warnings': []})

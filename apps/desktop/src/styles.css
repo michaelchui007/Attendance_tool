@@ -374,4 +374,28 @@ button:focus-visible, summary:focus-visible, tr:focus-visible { outline: 3px sol
 .day-rule-note p { line-height: 1.8; margin: 5px 0 0; }
 .table-filter { overflow-x: auto; }
 .source-content small { overflow-wrap: anywhere; }
+.config-origin { margin: 8px 2px; color: #627996; font-size: 12px; }
+.portable-save-panel { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 20px; margin: 12px 0; }
+.portable-save-panel strong { font-size: 13px; color: #314d71; }
+.portable-save-panel p, .portable-save-panel small { font-size: 12px; color: #6c7f98; line-height: 1.7; margin: 6px 0 0; }
+.portable-save-panel button { flex-shrink: 0; }
+.portable-save-results { margin: 12px 0; padding: 16px 20px; }
+.portable-save-results > div { padding: 8px 0; overflow-wrap: anywhere; font-size: 12px; }
+.portable-save-results small { color: #71839a; }
+.success-text, .resolved-note { color: #2d7661; }
+.resolved-note { background: #edf7f2; padding: 10px; font-size: 12px; line-height: 1.7; border-radius: 8px; }
+.attention-reasons { padding: 12px; margin-top: 12px; border-radius: 8px; background: #fff7e8; color: #855b27; font-size: 12px; }
+.attention-reasons h4 { margin: 0 0 8px; }
+.attention-reasons p { line-height: 1.6; margin: 5px 0; }
+.workbook-dialog, .about-dialog { max-height: 85vh; overflow: auto; width: min(640px, calc(100vw - 40px)); border: 1px solid #ced9e7; border-radius: 14px; padding: 26px; color: #263c57; box-shadow: 0 20px 80px #15223530; }
+.workbook-dialog::backdrop, .about-dialog::backdrop { background: #15223555; }
+.workbook-dialog h2, .about-dialog h2 { font-size: 20px; margin: 0 0 16px; }
+.workbook-dialog p, .about-dialog p { font-size: 13px; line-height: 1.8; }
+.workbook-config-files { max-height: 180px; overflow: auto; padding: 10px; border-radius: 8px; background: #f3f6fb; }
+.workbook-config-files > div { padding: 8px; font-size: 12px; overflow-wrap: anywhere; }
+.workbook-config-files strong, .workbook-config-files span { display: block; margin-bottom: 5px; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 22px; }
+.portable-choice-note { padding: 10px; background: #fff7e8; border-radius: 8px; }
+.author-credit { font-size: 11px; color: #74849a; padding: 0; }
+@media (max-width: 760px) { .portable-save-panel { flex-wrap: wrap; } .dialog-actions { flex-wrap: wrap; } }
 @media (max-width: 760px) { .settings-heading, .section-actions, .settings-footer { flex-wrap: wrap; } .configuration-section { padding: 17px; } .settings-footer > span { flex-basis: 100%; } .header-actions { flex-wrap: wrap; } .schedule-summary { flex-wrap: wrap; } }

@@ -14,6 +14,7 @@ from .calendar import HolidayCalendar, prefetch_holiday_data
 from .exporter import export_report
 from .parser import parse_attendance_workbook
 from .importer import SourceCache, merge_workbooks
+from .portable import inspect_workbook_state, save_workbook_state
 
 _SOURCE_CACHE = SourceCache()
 _CALENDAR_CACHE = {}
@@ -117,7 +118,8 @@ def run_server(
         try:
             request = json.loads(raw_line)
             request_id = request.get("requestId")
-            if request.get("command") != "calculate":
+            command = request.get("command")
+            if command not in {"calculate", "inspect_workbook_state", "save_workbook_state"}:
                 raise ValueError("不支持的 Sidecar 命令")
             input_path = request.get("inputPath")
             input_paths = request.get("inputPaths")
@@ -126,6 +128,17 @@ def run_server(
                     raise ValueError("缺少源考勤 Excel 路径")
             elif not isinstance(input_paths, list) or not input_paths or any(not isinstance(p, str) or not p.strip() for p in input_paths):
                 raise ValueError("源文件路径须为非空字符串列表")
+            if command != "calculate":
+                paths = input_paths if input_paths is not None else [input_path]
+                if command == "inspect_workbook_state":
+                    payload = inspect_workbook_state(paths)
+                else:
+                    payload = save_workbook_state(paths, request.get('settings'), request.get('overrides', []),
+                                                  request.get('expectedEmployee'), request.get('expectedSources'))
+                if request_id is not None:
+                    payload['requestId'] = request_id
+                _write_payload(output_stream, payload)
+                continue
             output_root = request.get("outputRoot")
             if output_root is not None and not isinstance(output_root, str):
                 raise ValueError("输出目录必须是字符串")

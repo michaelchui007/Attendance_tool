@@ -83,15 +83,17 @@ def test_manual_deduction_rejects_invalid_minutes(value):
         calculate(empty_source(), overrides=[{'workDate': '2026-11-02', 'compensatoryLeaveMinutes': value, 'leaveReason': '测试'}])
 
 
-def test_manual_deduction_requires_reason_and_zero_overrides_unknown():
-    """手动零与自动不同，未知来源提示仍保留。"""
+def test_manual_deduction_defaults_reason_and_zero_overrides_unknown():
+    """说明可省略，手动零解决扣减待办而保留原始未知来源。"""
     source = empty_source()
     source.compensatory_leave_records = [CompensatoryLeaveRecord(date(2026, 11, 2), 960, '调休假16小时', '测试')]
-    with pytest.raises(ValueError, match='原因'):
-        calculate(source, overrides=[{'workDate': '2026-11-02', 'compensatoryLeaveMinutes': 0}])
+    defaulted = calculate(source, overrides=[{'workDate': '2026-11-02', 'compensatoryLeaveMinutes': 0}]).days[0]
+    assert defaulted.leave_reason == '手动调整'
+    assert defaulted.resolution_status == 'resolved' and not defaulted.needs_attention
     day = calculate(source, overrides=[{'workDate': '2026-11-02', 'compensatoryLeaveMinutes': 0, 'leaveReason': '已核实不扣'}]).days[0]
     assert day.auto_compensatory_leave_minutes is None
     assert day.net_extra_minutes == 0 and day.requires_review
+    assert not day.attention_reasons and day.resolution_status == 'resolved'
 
 
 def test_standard_is_independent_and_no_interval_leave_not_rescaled():

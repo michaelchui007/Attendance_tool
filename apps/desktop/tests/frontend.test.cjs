@@ -20,6 +20,7 @@ function load(name) {
 const settings = load('settings');
 const state = load('attendanceState');
 const native = load('nativePaths');
+const workbook = load('workbookState');
 test('标准与作息独立', () => {
   const value = settings.defaultSettings(); value.calculation.workdayEnd = '18:00';
   assert.equal(settings.scheduleMinutes(value.calculation), 450);
@@ -45,10 +46,10 @@ test('扣减负号归一、分钟精度与空值', () => {
   assert.ok(Number.isNaN(settings.hoursToMinutes('', true))); assert.ok(Number.isNaN(settings.hoursToMinutes('0.001', true)));
   assert.equal(settings.hoursToMinutes('7.5'), 450);
 });
-test('独立扣减无需补卡，零有效且原因必填', () => {
+test('独立扣减无需补卡，零有效且原因选填', () => {
   assert.equal(state.validateOverride({ workDate: '2026-11-02', compensatoryLeaveMinutes: 480, leaveReason: '公司统一调休' }), '');
   assert.equal(state.validateOverride({ workDate: '2026-11-02', compensatoryLeaveMinutes: 0, leaveReason: '无需扣减' }), '');
-  assert.match(state.validateOverride({ workDate: '2026-11-02', compensatoryLeaveMinutes: 480 }), /原因/);
+  assert.equal(state.validateOverride({ workDate: '2026-11-02', compensatoryLeaveMinutes: 480 }), '');
   assert.match(state.validateOverride({ workDate: '2026-11-02', compensatoryLeaveMinutes: NaN, leaveReason: '修改' }), /分钟/);
   assert.equal(state.validateOverride({ workDate: '2026-11-02', compensatoryLeaveMinutes: null }), '');
 });
@@ -67,6 +68,45 @@ test('损坏配置回退提示，保存失败不吞异常', () => {
 test('未导入日期与已覆盖缺卡分开', () => {
   assert.equal(state.needsAttention({ covered: false, requiresReview: false, status: '未导入' }), false);
   assert.equal(state.needsAttention({ covered: true, requiresReview: false, status: '全天缺卡', requiredStandardMinutes: 480, records: [] }), true);
+});
+test('处理状态来自后端任务，不将已解决的源缺卡重新放回待处理', () => {
+  const day = { covered: true, status: '全天缺卡', requiresReview: true, requiredStandardMinutes: 480, records: [], needsAttention: false, resolutionStatus: 'resolved', attentionReasons: [] };
+  assert.equal(state.needsAttention(day), false);
+  assert.equal(state.attentionLabel(day), '已处理');
+  assert.equal(state.needsAttention({ ...day, status: '来源冲突', needsAttention: true, resolutionStatus: 'pending' }), true);
+  assert.equal(state.attentionLabel({ ...day, needsAttention: true, resolutionStatus: 'pending', attentionReasons: [{ code: 'sourceConflict', message: '来源存在冲突', action: '选择来源' }] }), '来源存在冲突');
+});
+test('手动原因空白省略和null均可保存，非文本仍拒绝', () => {
+  for (const reason of [undefined, null, '', '  ']) assert.equal(state.validateOverride({ workDate: '2026-11-02', compensatoryLeaveMinutes: 480, leaveReason: reason }), '');
+  assert.match(state.validateOverride({ workDate: '2026-11-02', compensatoryLeaveMinutes: 480, leaveReason: 5 }), /说明/);
+});
+/** 生成仅含可携带计算规则与匿名身份的配置检测结果。 */
+function portableFile(path, overrides = [], calculation = settings.defaultSettings().calculation) {
+  return { inputPath: path, path, employee: { name: '测试员工', account: 'test' }, status: 'valid', message: '', state: { schemaVersion: 1, savedAt: '2026-11-08', settings: calculation, overrides } };
+}
+test('多工作簿同配置合并修订，同日期一致只保留一次', () => {
+  const first = portableFile('一月.xlsx', [{ workDate: '2026-11-02', compensatoryLeaveMinutes: 480 }]);
+  const second = portableFile('二月.xlsx', [{ workDate: '2026-11-02', compensatoryLeaveMinutes: 480 }, { workDate: '2026-11-03', compensatoryLeaveMinutes: 0 }]);
+  const merged = workbook.combineWorkbookStates([first, second]);
+  assert.equal(merged.conflict, ''); assert.equal(merged.state.overrides.length, 2);
+  assert.equal(first.state.overrides.length, 1);
+});
+test('Excel设置或同日修订矛盾不得静默取最后一份', () => {
+  const first = portableFile('甲.xlsx', [{ workDate: '2026-11-02', compensatoryLeaveMinutes: 480 }]);
+  const second = portableFile('乙.xlsx', [{ workDate: '2026-11-02', compensatoryLeaveMinutes: 0 }]);
+  assert.equal(workbook.combineWorkbookStates([first, second]).state, null);
+  assert.match(workbook.combineWorkbookStates([first, second]).conflict, /修订/);
+  assert.match(workbook.combineWorkbookStates([first, portableFile('丙.xlsx', [], { ...settings.defaultSettings().calculation, standardMinutes: 420 })]).conflict, /系统配置/);
+});
+test('损坏版本及非法扣减不能作为Excel配置选项', () => {
+  const invalid = portableFile('坏.xlsx', [{ workDate: '2026-11-02', compensatoryLeaveMinutes: -480 }]);
+  const version = portableFile('未来.xlsx'); version.state.schemaVersion = 2;
+  assert.deepEqual(workbook.usableWorkbookFiles([invalid, version]), []);
+  assert.equal(workbook.combineWorkbookStates([invalid, version]).state, null);
+});
+test('工作簿携带配置不包含本机输出目录和派生引擎字段', () => {
+  const plain = settings.defaultSettings().calculation;
+  assert.deepEqual(workbook.portableSettings({ ...plain, outputRoot: 'C:/个人目录', dayBoundary: '04:00' }), plain);
 });
 test('规范化路径保留导入别名，移除其他文件不误丢当前覆盖日期', () => {
   const source = { id: 'same-content', path: '/private/tmp/考勤.xlsx', inputPath: '/tmp/考勤.xlsx', name: '考勤.xlsx', startDate: '2026-11-01', endDate: '2026-11-08' };
@@ -99,7 +139,7 @@ test('恢复原始异常时间不重新提交倒置时间，保留手动扣减�
   assert.equal(restored.leaveReason, '公司调休');
   assert.deepEqual(restored.schedule, original.schedule);
   assert.equal(state.validateOverride(restored), '');
-  assert.match(state.validateOverride({ ...restored, leaveReason: '' }), /原因/);
+  assert.equal(state.validateOverride({ ...restored, leaveReason: '' }), '');
 });
 test('人工扣减按最终值拆分，手动零值保留，未知量不冒充零', () => {
   const days = [{ covered: true, isLeaveEdited: true, compensatoryLeaveMinutes: 480 }, { covered: true, isLeaveEdited: true, compensatoryLeaveMinutes: 0 }, { covered: true, isLeaveEdited: false, compensatoryLeaveMinutes: 60 }, { covered: false, isLeaveEdited: false, compensatoryLeaveMinutes: null }];
