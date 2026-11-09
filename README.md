@@ -10,8 +10,8 @@
 
 | 系统 | 安装包 |
 |---|---|
-| Windows 64 位（x64） | 名称以 `x64-setup.exe` 结尾的安装程序 |
-| macOS Apple Silicon（M 系列芯片） | 名称以 `aarch64_unsigned.dmg` 结尾的镜像 |
+| Windows 64 位（x64） | 名称包含 `windows_x64_setup.exe` 的安装程序 |
+| macOS Apple Silicon（M 系列芯片） | 名称包含 `macos_arm64_unsigned.dmg` 的镜像 |
 
 `Source code` 是源代码压缩包，无需下载它来安装软件。安装包包含运行环境，不需要另外安装 Python、Node.js 或 Rust。私有仓库需要使用具有访问权限的 GitHub 账号下载。
 
@@ -26,7 +26,7 @@ macOS 安装包目前未经过 Apple Developer ID 签名和公证。首次打开
 - **Excel 导出**：保留每日结果、原始记录、人工修订、计算规则和文件来源。
 - **随报表携带配置**：将规则与修订保存到源 Excel 的专用工作表，换电脑后导入可选择恢复。
 
-本分支包含 v0.3.1 的功能；可下载安装的版本以 Release 页面为准。
+当前版本为 v0.3.1。更新内容见 [版本说明](docs/releases/v0.3.1.md)，安装包以 Release 页面为准。
 
 ## 快速开始
 

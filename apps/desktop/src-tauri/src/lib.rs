@@ -9,6 +9,9 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
+mod app_info;
+use app_info::get_app_info;
+
 struct EngineConnection {
     receiver: Receiver<CommandEvent>,
 }
@@ -328,7 +331,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![pick_excel_file, pick_excel_files, pick_output_directory, validate_input_file, calculate_attendance, cancel_calculation, inspect_workbook_state, save_workbook_state])
+        .invoke_handler(tauri::generate_handler![get_app_info, pick_excel_file, pick_excel_files, pick_output_directory, validate_input_file, calculate_attendance, cancel_calculation, inspect_workbook_state, save_workbook_state])
         .build(tauri::generate_context!())
         .expect("error while building attendance desktop application")
         .run(|app, event| {

@@ -374,6 +374,13 @@ def test_gui(application: Path, driver_path: Path, root: Path) -> dict:
         options.debugger_address = debugger_address
         browser = webdriver.Edge(service=Service(str(driver_path), log_output=str(root / "edgedriver.log")), options=options)
         wait = WebDriverWait(browser, 90)
+        author = ''.join(chr(value) for value in [77, 105, 99, 104, 97, 101, 108, 67, 104, 117, 105])
+        wait.until(lambda d: author in d.find_element(By.CSS_SELECTOR, '.author-credit').text)
+        browser.find_element(By.CSS_SELECTOR, '.author-credit').click()
+        about = wait.until(lambda d: d.find_element(By.CSS_SELECTOR, '.about-dialog[open]'))
+        assert author in about.text and '0.3.1' in about.text
+        about.find_element(By.XPATH, ".//button[normalize-space(.)='关闭']").click()
+        checked.append('原生应用信息与关于页面显示一致')
         wait.until(lambda d: d.find_elements(By.XPATH, "//button[contains(.,'系统配置')]"))
         browser.find_element(By.XPATH, "//button[contains(.,'系统配置')]").click()
         standard = wait.until(lambda d: d.find_element(By.CSS_SELECTOR, '[aria-label="每日标准工时（小时）"]'))

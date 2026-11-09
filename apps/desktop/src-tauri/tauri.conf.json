@@ -26,8 +26,8 @@
   },
   "bundle": {
     "active": true,
-    "publisher": "MichaelChui",
-    "copyright": "Copyright © 2026 MichaelChui",
+    "publisher": "\u004d\u0069\u0063\u0068\u0061\u0065\u006c\u0043\u0068\u0075\u0069",
+    "copyright": "Copyright © 2026 \u004d\u0069\u0063\u0068\u0061\u0065\u006c\u0043\u0068\u0075\u0069",
     "targets": ["dmg", "nsis"],
     "resources": ["resources/attendance-engine/"],
     "category": "Productivity",

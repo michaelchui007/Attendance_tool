@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getVersion } from "@tauri-apps/api/app";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
@@ -71,6 +70,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activeInsight, setActiveInsight] = useState<InsightKey | null>(null);
   const [appVersion, setAppVersion] = useState('');
+  const [appAuthor, setAppAuthor] = useState('');
   const [dragging, setDragging] = useState(false);
   const [editing, setEditing] = useState(false);
   const [overrides, setOverrides] = useState<Overrides>({});
@@ -148,7 +148,10 @@ function App() {
   nativeState.current = { acceptPaths, dirty, configDirty, loading, savingWorkbook };
   useEffect(() => {
     if (!isTauri()) return;
-    getVersion().then(setAppVersion).catch(() => undefined);
+    invoke<{ author: string; version: string }>('get_app_info').then(info => {
+      setAppAuthor(info.author);
+      setAppVersion(info.version);
+    }).catch(() => undefined);
     let disposed = false;
     const cleanups: Array<() => void> = [];
     const register = (promise: Promise<() => void>) => promise.then(fn => { if (disposed) fn(); else cleanups.push(fn); }).catch(reason => setError(String(reason)));
@@ -309,8 +312,8 @@ function App() {
       <InsightDrawer active={activeInsight} result={result} onClose={() => setActiveInsight(null)} onSelectDay={selectDay} onShowAbnormal={() => { setFilter("attention"); setActiveInsight(null); }} />
     </>}
     </>}
-    <footer className="workspace-footer"><span>考勤数据仅在本机处理</span><button className="text-button author-credit" onClick={() => setAboutOpen(true)}>MichaelChui · 关于</button></footer>
-    {aboutOpen && <AboutDialog version={appVersion} onClose={() => setAboutOpen(false)} />}
+    <footer className="workspace-footer"><span>考勤数据仅在本机处理</span><button className="text-button author-credit" onClick={() => setAboutOpen(true)}>{appAuthor ? appAuthor + ' · 关于' : '关于'}</button></footer>
+    {aboutOpen && <AboutDialog version={appVersion} author={appAuthor} onClose={() => setAboutOpen(false)} />}
     {portablePending && <WorkbookConfigDialog files={portablePending} onSoftware={useSoftwareConfig} onExcel={useExcelConfig} />}
     <HelpDrawer open={helpOpen} version={appVersion || "开发版"} onClose={() => setHelpOpen(false)} />
   </main>;
