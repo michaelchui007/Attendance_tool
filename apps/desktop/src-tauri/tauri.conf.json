@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "考勤统计",
-  "version": "0.2.0",
+  "version": "0.3.2",
   "identifier": "com.attendance.tool",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -26,11 +26,13 @@
   },
   "bundle": {
     "active": true,
+    "publisher": "\u004d\u0069\u0063\u0068\u0061\u0065\u006c\u0043\u0068\u0075\u0069",
+    "copyright": "Copyright © 2026 \u004d\u0069\u0063\u0068\u0061\u0065\u006c\u0043\u0068\u0075\u0069",
     "targets": ["dmg", "nsis"],
     "resources": ["resources/attendance-engine/"],
     "category": "Productivity",
     "shortDescription": "本地考勤统计与加班调休计算工具",
-    "longDescription": "读取员工个人考勤 Excel 报表，按照工作日、节假日、午休、跨日和地点福利规则生成统计结果。",
+    "longDescription": "读取员工个人考勤 Excel 报表，按照工作日、节假日、午休及跨日规则统计工时，支持调休分摊和打卡时间修订。",
     "macOS": {
       "minimumSystemVersion": "11.0",
       "signingIdentity": null

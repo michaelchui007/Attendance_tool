@@ -5,22 +5,19 @@ from datetime import date, datetime, time, timedelta
 
 from .calendar import HolidayCalendar, classify_day
 from .models import (
-    AttendanceReport,
-    AttendanceSource,
-    CalculationStatus,
-    DailyAttendanceResult,
-    PunchRecord,
-    PunchType,
+    AttendanceReport, AttendanceSource, CalculationStatus, CompensatoryLeaveRecord,
+    DailyAttendanceResult, PunchRecord, PunchType,
 )
+from .parser import _resolve_work_date
+from .schedules import normalize_settings, schedule_for_day, minute_value, validate_schedule
 
 STANDARD_MINUTES = 8 * 60
-LOCATION_KEYWORD = "云岭东路586号"
-LOCATION_BENEFIT_MINUTES = 30
 LUNCH_START = time(12, 0)
 LUNCH_END = time(13, 30)
 
 
 def _date_range(start: date, end: date):
+    """按自然日遍历包含两端的统计区间。"""
     current = start
     while current <= end:
         yield current
@@ -28,171 +25,339 @@ def _date_range(start: date, end: date):
 
 
 def _minutes_between(start: datetime, end: datetime) -> int:
+    """计算非负整数分钟，保持与已有打卡分钟口径一致。"""
     return max(0, int((end - start).total_seconds() // 60))
 
 
-def _lunch_overlap_minutes(work_date: date, start: datetime, end: datetime) -> int:
-    lunch_start = datetime.combine(work_date, LUNCH_START)
-    lunch_end = datetime.combine(work_date, LUNCH_END)
-    overlap_start = max(start, lunch_start)
-    overlap_end = min(end, lunch_end)
-    return _minutes_between(overlap_start, overlap_end) if overlap_end > overlap_start else 0
+def _schedule_intervals(work_date: date, rules: dict) -> list[tuple[datetime, datetime]]:
+    """返回请假可计入的正常工作区间，显式无午休时保留完整区间。"""
+    stamp = lambda key: datetime.combine(work_date, time.fromisoformat(rules[key]))
+    if rules['lunchStart'] is None:
+        return [(stamp('workdayStart'), stamp('workdayEnd'))]
+    return [(stamp('workdayStart'), stamp('lunchStart')), (stamp('lunchEnd'), stamp('workdayEnd'))]
+
+
+def _merge_minutes(intervals: list[tuple[datetime, datetime]]) -> int:
+    """合并重复和重叠申请区间，防止同一时段被多次扣减。"""
+    merged: list[tuple[datetime, datetime]] = []
+    for start, end in sorted(intervals):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
+    return sum(_minutes_between(start, end) for start, end in merged)
+
+
+def _leave_for_day(
+    source: AttendanceSource, work_date: date, is_workday: bool, rules: dict,
+) -> tuple[int | None, list[CompensatoryLeaveRecord], list[str]]:
+    """从原申请区间分配当日量，并保留无法确定的申请为未知。
+
+    Args:
+        source: 原始报表及调休申请。
+        work_date: 当前计算的自然工作日期。
+        is_workday: 工作日历判定结果。
+        rules: 当前午休及正常工作区间。
+
+    Returns:
+        当日申请分钟数、去重的原始依据，以及调整或异常说明。
+    """
+    intervals = []
+    originals = []
+    seen = set()
+    simple_minutes = 0
+    unknown = False
+    notes = []
+    for record in source.compensatory_leave_records:
+        has_interval = record.start_at is not None and record.end_at is not None
+        applies = record.start_at.date() <= work_date <= record.end_at.date() if has_interval else record.work_date == work_date
+        if record.parse_warning and record.work_date == work_date:
+            applies = True
+        if not applies:
+            continue
+        chosen = source.source_choices.get(work_date.isoformat())
+        if chosen and record.sources and not any(item["sourceId"] == chosen for item in record.sources):
+            continue
+        key = (record.start_at, record.end_at) if has_interval else (record.work_date, record.description, record.item_index)
+        if key in seen:
+            continue
+        seen.add(key)
+        originals.append(record)
+        if not is_workday:
+            continue
+        if record.parse_warning:
+            unknown = True
+            notes.append(record.parse_warning)
+            continue
+        if has_interval:
+            for window_start, window_end in _schedule_intervals(work_date, rules):
+                start, end = max(record.start_at, window_start), min(record.end_at, window_end)
+                if start < end:
+                    intervals.append((start, end))
+        else:
+            repeated_dates = {item.work_date for item in source.compensatory_leave_records if item.description == record.description and item.item_index == record.item_index}
+            if record.parse_warning or record.minutes > STANDARD_MINUTES or len(repeated_dates) > 1:
+                unknown = True
+                notes.append(record.parse_warning or '申请缺少可核验的起止区间，不能确定每日调休量')
+            else:
+                simple_minutes += record.minutes
+                notes.append('申请未提供起止区间，暂按源表明确单日时长处理，请核对原记录')
+    if not is_workday:
+        return 0, originals, ['休息日不计调休扣减'] if originals else []
+    if unknown or (simple_minutes and intervals) or simple_minutes > STANDARD_MINUTES:
+        return None, originals, notes + ['每日调休分摊待核对，净剩加班暂不计算']
+    return _merge_minutes(intervals) + simple_minutes, originals, notes
+
+
+def _parse_overrides(source: AttendanceSource, overrides: list[dict] | None) -> dict:
+    """独立校验打卡、扣减和单日作息修订，允许只指定其中一项。"""
+    if overrides is None:
+        return {}
+    if not isinstance(overrides, list):
+        raise ValueError('考勤修订必须为列表')
+    result = {}
+    for item in overrides:
+        if not isinstance(item, dict):
+            raise ValueError('考勤修订必须为对象')
+        try:
+            work_date = date.fromisoformat(item['workDate'])
+        except (ValueError, TypeError, KeyError) as exc:
+            raise ValueError('考勤修订缺少有效日期') from exc
+        if not source.start_date <= work_date <= source.end_date or work_date in result:
+            raise ValueError('修订日期超出统计期间或重复')
+        if source.covered_dates is not None and work_date not in source.covered_dates:
+            raise ValueError(f'{work_date} 尚未导入报表，不能应用修订')
+        change = dict(item)
+        if 'resetTimes' in item and type(item['resetTimes']) is not bool:
+            raise ValueError('恢复原始时间标记须为布尔值')
+        if not item.get('resetTimes', False) and ('firstCheckIn' in item or 'lastCheckOut' in item):
+            if not all(key in item for key in ('firstCheckIn', 'lastCheckOut')):
+                raise ValueError('修订打卡时须同时提供上下班字段，缺卡使用空值')
+            times = []
+            for key in ('firstCheckIn', 'lastCheckOut'):
+                value = item[key]
+                try:
+                    stamp = datetime.fromisoformat(value) if isinstance(value, str) else None
+                except ValueError as exc:
+                    raise ValueError('修订时间格式无效') from exc
+                if value is not None and stamp is None:
+                    raise ValueError('修订时间必须为日期时间字符串或空值')
+                if stamp is not None and (stamp.tzinfo is not None or stamp.second or stamp.microsecond or _resolve_work_date(stamp) != work_date):
+                    raise ValueError('修订时间须精确到分钟，且属于当天04:00至次日04:00前')
+                times.append(stamp)
+            if all(times) and times[1] <= times[0]:
+                raise ValueError('下班时间必须晚于上班时间')
+            change['times'] = tuple(times)
+        manual = item.get('compensatoryLeaveMinutes')
+        if manual is not None:
+            minute_value(manual, '手动调休扣减', allow_zero=True)
+            reason = item.get('leaveReason')
+            if reason is not None and not isinstance(reason, str):
+                raise ValueError('手动扣减原因须为文本或空值')
+            change['leaveReason'] = (reason or '').strip() or '手动调整'
+        if item.get('schedule') is not None:
+            change['schedule'] = validate_schedule(item['schedule'])
+        result[work_date] = change
+    return result
+
+
+def _set_attention_state(day: DailyAttendanceResult) -> None:
+    """将仍需用户处理的任务与原始异常事实分开记录。
+
+    Args:
+        day: 已完成计算或明确无法计算的单日结果，原始状态不会被修改。
+
+    手动指定最终扣减表示用户已处理当天的缺卡/申请扣减问题；它不能
+    解决来源冲突或倒置时间。只修改作息不会消除缺卡待办。
+    """
+    reasons: list[dict[str, str]] = []
+    if not day.covered:
+        day.resolution_status = 'notImported'
+        day.attention_reasons = []
+        day.needs_attention = False
+        return
+    if day.status is CalculationStatus.SOURCE_CONFLICT:
+        reasons.append({
+            'code': 'sourceConflict',
+            'message': '多个报表对当天的打卡或调休申请记录不一致',
+            'action': '选择当天采用的来源报表，然后重新统计',
+        })
+    else:
+        if day.status is CalculationStatus.INVALID_TIME_RANGE:
+            reasons.append({
+                'code': 'invalidTimeRange',
+                'message': '下班时间不晚于上班时间，实际工时无法计算',
+                'action': '查看原始打卡，并修正上下班日期和时间',
+            })
+        elif not day.is_leave_edited and day.status is not CalculationStatus.SUCCESS and (
+            day.required_standard_minutes > 0 or day.records or day.first_check_in or day.last_check_out
+        ):
+            missing = {
+                CalculationStatus.MISSING_CHECK_IN: ('missingCheckIn', '缺少上班打卡，实际工时无法计算'),
+                CalculationStatus.MISSING_CHECK_OUT: ('missingCheckOut', '缺少下班打卡，实际工时无法计算'),
+                CalculationStatus.MISSING_BOTH: ('missingBoth', '缺少上下班打卡，实际工时无法计算'),
+            }
+            code, message = missing[day.status]
+            reasons.append({
+                'code': code, 'message': message,
+                'action': '补齐打卡时间；如为公司安排调休，可手动指定当天扣减',
+            })
+        if day.requires_review and not day.is_leave_edited:
+            if day.leave_requested_minutes is None:
+                code = 'unknownLeave'
+                message = '调休申请的每日时长无法确定，扣减与净额尚未计算'
+            elif day.leave_requested_minutes and day.actual_effective_minutes is not None and (
+                day.actual_effective_minutes >= day.required_standard_minutes > 0
+            ):
+                code = 'workLeaveConflict'
+                message = '已达到标准工时，但当天仍有调休申请'
+            else:
+                code = 'reviewLeave'
+                message = '调休申请缺少完整区间或存在来源提示，需要核对扣减'
+            reasons.append({
+                'code': code, 'message': message,
+                'action': '查看原始申请与计算说明，确认后手动指定扣减或修正来源',
+            })
+    day.attention_reasons = reasons
+    day.needs_attention = bool(reasons)
+    original_invalid = (day.original_first_check_in is None or day.original_last_check_out is None or
+                        day.original_last_check_out <= day.original_first_check_in)
+    if reasons:
+        day.resolution_status = 'pending'
+    elif day.is_leave_edited or (day.is_edited and original_invalid and day.status is CalculationStatus.SUCCESS):
+        day.resolution_status = 'resolved'
+    else:
+        day.resolution_status = 'normal'
 
 
 def calculate_attendance(
-    source: AttendanceSource,
-    holiday_calendar: HolidayCalendar | None = None,
+    source: AttendanceSource, holiday_calendar: HolidayCalendar | None = None,
+    *, overrides: list[dict] | None = None, lunch_start: str | None = None, lunch_end: str | None = None,
+    settings: dict | None = None,
 ) -> AttendanceReport:
+    """按有效来源、独立标准及当日规则计算，不修改原始资料。
+
+    Args:
+        source: 已解析或合并的源记录。
+        holiday_calendar: 注入的工作日历。
+        overrides: 每日打卡、手动扣减或作息覆盖。
+        lunch_start: 旧协议午休开始。
+        lunch_end: 旧协议午休结束。
+        settings: 系统标准、默认作息及日期段规则。
+
+    Returns:
+        含日结果、自动值、修订审计和来源的完整报告。
+    """
+    rules = normalize_settings(settings, lunch_start, lunch_end)
+    changes = _parse_overrides(source, overrides)
     grouped: dict[date, list[PunchRecord]] = defaultdict(list)
     for record in source.records:
         if source.start_date <= record.work_date <= source.end_date:
-            grouped[record.work_date].append(record)
-    compensatory_leave_by_date: dict[date, int] = defaultdict(int)
-    for record in source.compensatory_leave_records:
-        if source.start_date <= record.work_date <= source.end_date:
-            compensatory_leave_by_date[record.work_date] += record.minutes
-
-    results: list[DailyAttendanceResult] = []
+            chosen = source.source_choices.get(record.work_date.isoformat())
+            if not chosen or not record.sources or any(item['sourceId'] == chosen for item in record.sources):
+                grouped[record.work_date].append(record)
+    unresolved = {item['workDate'] for item in source.conflicts if not item['resolved']}
+    results = []
     for work_date in _date_range(source.start_date, source.end_date):
+        change = changes.get(work_date, {})
+        schedule, schedule_source = schedule_for_day(rules, work_date, change.get('schedule'))
+        standard = rules['standardMinutes']
         records = sorted(grouped.get(work_date, []), key=lambda item: item.timestamp)
-        compensatory_leave_minutes = compensatory_leave_by_date[work_date]
-        leave_message = (
-            [f"假勤申请包含调休 {compensatory_leave_minutes / 60:g} 小时，已从净剩加班时长扣除"]
-            if compensatory_leave_minutes
-            else []
+        day_type = holiday_calendar.classify_day(work_date) if holiday_calendar is not None else classify_day(work_date)
+        covered = source.covered_dates is None or work_date in source.covered_dates
+        requested, leave_records, messages = _leave_for_day(source, work_date, day_type.is_workday, schedule)
+        original_start = min((item.timestamp for item in records if item.punch_type is PunchType.CHECK_IN), default=None)
+        original_end = max((item.timestamp for item in records if item.punch_type is PunchType.CHECK_OUT), default=None)
+        first, last = change.get('times', (original_start, original_end))
+        status = CalculationStatus.SUCCESS
+        if first is None and last is None:
+            status = CalculationStatus.MISSING_BOTH
+        elif first is None:
+            status = CalculationStatus.MISSING_CHECK_IN
+        elif last is None:
+            status = CalculationStatus.MISSING_CHECK_OUT
+        elif last <= first:
+            status = CalculationStatus.INVALID_TIME_RANGE
+        if not covered:
+            status = CalculationStatus.NOT_IMPORTED
+        elif work_date.isoformat() in unresolved:
+            status = CalculationStatus.SOURCE_CONFLICT
+        selected_source = source.source_choices.get(work_date.isoformat())
+        source_ids = sorted({entry['sourceId'] for record in [*records, *leave_records] for entry in record.sources
+                             if not selected_source or entry['sourceId'] == selected_source}
+                            | {item['id'] for item in source.files if not item['duplicateOf']
+                               and item['startDate'] <= work_date.isoformat() <= item['endDate']
+                               and (not selected_source or item['id'] == selected_source)})
+        day = DailyAttendanceResult(
+            work_date=work_date, day_type=day_type, status=status, covered=covered, source_ids=source_ids,
+            required_standard_minutes=standard if covered and day_type.is_workday else 0,
+            actual_regular_minutes=None, actual_effective_minutes=None, extra_minutes=None,
+            compensatory_leave_minutes=requested, net_extra_minutes=-requested if requested is not None else None,
+            first_check_in=first, last_check_out=last, records=records, messages=messages,
+            leave_requested_minutes=requested, leave_records=leave_records,
+            original_first_check_in=original_start, original_last_check_out=original_end,
+            is_edited=(first, last) != (original_start, original_end),
+            requires_review=requested is None or any(record.parse_warning or record.start_at is None for record in leave_records),
+            schedule=schedule, schedule_source=schedule_source,
         )
-        day_type = (
-            holiday_calendar.classify_day(work_date)
-            if holiday_calendar is not None
-            else classify_day(work_date)
-        )
-        required_standard = STANDARD_MINUTES if day_type.is_workday else 0
-        check_ins = [record for record in records if record.punch_type is PunchType.CHECK_IN]
-        check_outs = [record for record in records if record.punch_type is PunchType.CHECK_OUT]
-        first_check_in = min((record.timestamp for record in check_ins), default=None)
-        last_check_out = max((record.timestamp for record in check_outs), default=None)
-
-        if not check_ins and not check_outs:
-            results.append(
-                DailyAttendanceResult(
-                    work_date=work_date,
-                    day_type=day_type,
-                    status=CalculationStatus.MISSING_BOTH,
-                    required_standard_minutes=required_standard,
-                    actual_regular_minutes=None,
-                    actual_effective_minutes=None,
-                    extra_minutes=None,
-                    compensatory_leave_minutes=compensatory_leave_minutes,
-                    net_extra_minutes=-compensatory_leave_minutes,
-                    records=records,
-                    messages=["当天没有上班或下班打卡记录", *leave_message],
-                )
-            )
+        if not covered or status is CalculationStatus.SOURCE_CONFLICT:
+            day.leave_requested_minutes = day.compensatory_leave_minutes = day.net_extra_minutes = None
+            day.auto_compensatory_leave_minutes = None
+            day.requires_review = covered
+            day.messages = ['日期尚未导入，不计入已覆盖期间汇总'] if not covered else ['来源记录冲突，请先选择当天采用的报表版本']
+            _set_attention_state(day)
+            results.append(day)
             continue
-        if not check_ins:
-            results.append(
-                DailyAttendanceResult(
-                    work_date=work_date,
-                    day_type=day_type,
-                    status=CalculationStatus.MISSING_CHECK_IN,
-                    required_standard_minutes=required_standard,
-                    actual_regular_minutes=None,
-                    actual_effective_minutes=None,
-                    extra_minutes=None,
-                    compensatory_leave_minutes=compensatory_leave_minutes,
-                    net_extra_minutes=-compensatory_leave_minutes,
-                    last_check_out=last_check_out,
-                    records=records,
-                    messages=["缺少上班打卡，实际工时未计算", *leave_message],
-                )
-            )
-            continue
-        if not check_outs:
-            results.append(
-                DailyAttendanceResult(
-                    work_date=work_date,
-                    day_type=day_type,
-                    status=CalculationStatus.MISSING_CHECK_OUT,
-                    required_standard_minutes=required_standard,
-                    actual_regular_minutes=None,
-                    actual_effective_minutes=None,
-                    extra_minutes=None,
-                    compensatory_leave_minutes=compensatory_leave_minutes,
-                    net_extra_minutes=-compensatory_leave_minutes,
-                    first_check_in=first_check_in,
-                    records=records,
-                    messages=["缺少下班打卡，实际工时未计算", *leave_message],
-                )
-            )
-            continue
-        if last_check_out <= first_check_in:
-            results.append(
-                DailyAttendanceResult(
-                    work_date=work_date,
-                    day_type=day_type,
-                    status=CalculationStatus.INVALID_TIME_RANGE,
-                    required_standard_minutes=required_standard,
-                    actual_regular_minutes=None,
-                    actual_effective_minutes=None,
-                    extra_minutes=None,
-                    compensatory_leave_minutes=compensatory_leave_minutes,
-                    net_extra_minutes=-compensatory_leave_minutes,
-                    first_check_in=first_check_in,
-                    last_check_out=last_check_out,
-                    records=records,
-                    messages=["最晚下班时间不晚于最早上班时间", *leave_message],
-                )
-            )
-            continue
-
-        raw_minutes = _minutes_between(first_check_in, last_check_out)
-        if day_type.is_workday:
-            lunch_minutes = _lunch_overlap_minutes(work_date, first_check_in, last_check_out)
-            has_benefit = any(LOCATION_KEYWORD in record.location for record in records)
-            benefit_minutes = LOCATION_BENEFIT_MINUTES if has_benefit else 0
-            effective_minutes = max(0, raw_minutes - lunch_minutes)
-            regular_minutes = min(effective_minutes, STANDARD_MINUTES)
-            credited_minutes = effective_minutes + benefit_minutes
-            extra_minutes = max(0, credited_minutes - STANDARD_MINUTES)
+        if day.is_edited:
+            messages.append('已使用手动修订的上下班时间，原始打卡记录保留')
+        if status is CalculationStatus.SUCCESS:
+            raw = _minutes_between(first, last)
+            if day_type.is_workday and schedule['lunchStart'] is not None:
+                left = datetime.combine(work_date, time.fromisoformat(schedule['lunchStart']))
+                right = datetime.combine(work_date, time.fromisoformat(schedule['lunchEnd']))
+                day.lunch_deduction_minutes = _minutes_between(max(first, left), min(last, right))
+            effective = max(0, raw - day.lunch_deduction_minutes)
+            day.raw_duration_minutes = raw
+            day.actual_effective_minutes = effective
+            day.actual_regular_minutes = min(effective, standard) if day_type.is_workday else 0
+            day.extra_minutes = max(0, effective - standard) if day_type.is_workday else effective
+            if requested is not None:
+                day.compensatory_leave_minutes = min(requested, max(standard - effective, 0)) if day_type.is_workday else 0
+                day.net_extra_minutes = day.extra_minutes - day.compensatory_leave_minutes
+                if requested:
+                    messages.append(f'当日申请 {requested} 分钟，自动扣减 {day.compensatory_leave_minutes} 分钟（不超过剩余标准工时）')
+                if requested and effective >= standard:
+                    day.requires_review = True
+                    messages.append('已满标准工时但仍有调休申请，请核对打卡与申请是否冲突')
         else:
-            lunch_minutes = 0
-            benefit_minutes = 0
-            effective_minutes = raw_minutes
-            regular_minutes = 0
-            extra_minutes = effective_minutes
-
-        messages = []
-        if lunch_minutes:
-            messages.append(f"扣除午休 {lunch_minutes} 分钟")
-        if benefit_minutes:
-            messages.append("地点包含“云岭东路586号”，地点福利 30 分钟计入加班计算")
+            messages.append(f'{status.value}，实际工时及加班未计算')
+            if requested:
+                messages.append(f'按已确定的当日调休扣减 {requested} 分钟；缺卡无法核验剩余标准工时')
+        day.auto_compensatory_leave_minutes = day.compensatory_leave_minutes
+        manual = change.get('compensatoryLeaveMinutes')
+        if (status is CalculationStatus.SUCCESS and day_type.is_workday
+                and requested == 0 and not leave_records and manual is None):
+            # 完整出勤且没有调休依据时单列不足；有申请或人工值时沿用扣减规则。
+            day.shortfall_minutes = max(standard - day.actual_effective_minutes, 0)
+            day.net_extra_minutes = day.extra_minutes - day.shortfall_minutes
+            if day.shortfall_minutes:
+                messages.append(f'实际工时不足标准 {day.shortfall_minutes} 分钟，计入工时不足扣减（非调休）')
+        if manual is not None:
+            day.compensatory_leave_minutes = manual
+            day.net_extra_minutes = (day.extra_minutes or 0) - manual
+            day.is_leave_edited = day.is_edited = True
+            day.leave_reason = change['leaveReason']
+            messages.append(f'手动指定扣减 {manual} 分钟，替代自动值；原因：{day.leave_reason}')
+            messages.append('当天扣减已手动处理，缺卡和原始申请提示保留用于追溯')
+        if change.get('schedule') is not None:
+            day.is_edited = True
+        if schedule['netScheduleMinutes'] != standard:
+            messages.append(f'作息净时长 {schedule["netScheduleMinutes"]} 分钟，独立标准工时 {standard} 分钟')
+        if day.lunch_deduction_minutes:
+            messages.append(f'扣除午休 {day.lunch_deduction_minutes} 分钟')
         if not messages:
-            messages.append("未发生午休扣除或地点福利加计")
-        messages.extend(leave_message)
-
-        results.append(
-            DailyAttendanceResult(
-                work_date=work_date,
-                day_type=day_type,
-                status=CalculationStatus.SUCCESS,
-                required_standard_minutes=required_standard,
-                actual_regular_minutes=regular_minutes,
-                actual_effective_minutes=effective_minutes,
-                extra_minutes=extra_minutes,
-                compensatory_leave_minutes=compensatory_leave_minutes,
-                net_extra_minutes=extra_minutes - compensatory_leave_minutes,
-                raw_duration_minutes=raw_minutes,
-                lunch_deduction_minutes=lunch_minutes,
-                location_benefit_minutes=benefit_minutes,
-                first_check_in=first_check_in,
-                last_check_out=last_check_out,
-                records=records,
-                messages=messages,
-            )
-        )
-
-    return AttendanceReport(
-        source=source,
-        days=results,
-        calendar_info=holiday_calendar.to_dict() if holiday_calendar is not None else {},
-    )
+            messages.append('按实际打卡计算，不加计地点福利')
+        _set_attention_state(day)
+        results.append(day)
+    return AttendanceReport(source=source, days=results, rules=rules,
+                            calendar_info=holiday_calendar.to_dict() if holiday_calendar is not None else {'years': [], 'warnings': []})

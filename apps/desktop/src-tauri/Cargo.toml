@@ -1,8 +1,8 @@
 [package]
 name = "attendance-desktop"
-version = "0.2.0"
+version = "0.3.2"
 description = "Cross-platform attendance calculator"
-authors = ["Attendance Tool"]
+authors = ["\u004d\u0069\u0063\u0068\u0061\u0065\u006c\u0043\u0068\u0075\u0069"]
 edition = "2021"
 
 [lib]

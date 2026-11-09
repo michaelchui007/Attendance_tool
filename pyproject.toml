@@ -4,8 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "attendance-tool"
-version = "0.2.0"
+version = "0.3.2"
 description = "Cross-platform attendance calculation engine"
+authors = [{ name = "\u004d\u0069\u0063\u0068\u0061\u0065\u006c\u0043\u0068\u0075\u0069" }]
 requires-python = ">=3.11"
 dependencies = [
   "openpyxl>=3.1,<4",

@@ -14,6 +14,31 @@ $NpmRegistry = if ($env:NPM_REGISTRY) {
     "https://registry.npmjs.org"
 }
 
+function Test-TransientBundleDownloadFailure {
+    <#
+    .SYNOPSIS
+    仅识别安装包外部下载的瞬时网络故障，编译错误不进入重试。
+    .PARAMETER BuildLog
+    当前一次 Tauri 构建的完整输出。
+    #>
+    param([string]$BuildLog)
+
+    if ($BuildLog -match '(?im)(error\[E\d+\]|error TS\d+|could not compile|failed to compile|compilation failed)') {
+        return $false
+    }
+    $FailureLines = ($BuildLog -split "`r?`n" | Where-Object {
+        $_ -match '(?i)(error|failed|timed? ?out|timeout)'
+    }) -join "`n"
+    # Tauri 将下载地址和 HTTP 错误拆成两行；必须保留同次构建的下载上下文。
+    $ExternalDownload = ($FailureLines -match '(?i)(download|fetch|https?://)') -or
+        ($BuildLog -match '(?im)(download(?:ing)?|fetch(?:ing)?)[^\r\n]*https?://')
+    $TransientFailure = $FailureLines -match '(?i)(\b(?:429|502|503|504)\b|timed? ?out|timeout)'
+    return $ExternalDownload -and $TransientFailure
+}
+
+# 在耗时编译之前取得官方安装工具，下载失败可立即定位。
+& (Join-Path $PSScriptRoot "windows_prepare_nsis.ps1")
+
 Write-Host "[1/5] Preparing Python environment..."
 if (-not (Test-Path $VenvPython)) {
     python -m venv $VenvDir
@@ -81,9 +106,25 @@ try {
     }
 
     Write-Host "[5/5] Building the Windows NSIS installer..."
-    npm run tauri build -- --bundles nsis
-    if ($LASTEXITCODE -ne 0) {
-        throw "Tauri Windows build failed."
+    # 网络下载可短暂失败；最多三次构建，非网络编译错误立即终止。
+    for ($Attempt = 1; $Attempt -le 3; $Attempt++) {
+        $BuildMessages = @()
+        $SavedErrorPreference = $ErrorActionPreference
+        try {
+            # Windows PowerShell 5 将原生 stderr 包装为错误记录，退出码统一在下方检查。
+            $ErrorActionPreference = "Continue"
+            npm run tauri build -- --bundles nsis 2>&1 | Tee-Object -Variable BuildMessages
+            $BuildExitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $SavedErrorPreference
+        }
+        if ($BuildExitCode -eq 0) { break }
+        $BuildLog = ($BuildMessages | ForEach-Object { $_.ToString() }) -join "`n"
+        if ($Attempt -eq 3 -or -not (Test-TransientBundleDownloadFailure -BuildLog $BuildLog)) {
+            throw "Tauri Windows build failed (exit $BuildExitCode, attempt $Attempt/3)."
+        }
+        Write-Warning "Installer dependency download failed temporarily; retrying build ($Attempt/3)."
+        Start-Sleep -Seconds (10 * $Attempt)
     }
 } finally {
     Pop-Location

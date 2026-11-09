@@ -1,0 +1,131 @@
+name: Windows installed application tests
+
+on:
+  workflow_call:
+    inputs:
+      installer_artifact_name:
+        description: "通过验证的安装包构建产物名称"
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+  push:
+    branches:
+      - "codex/v0.3.1"
+  pull_request:
+    paths:
+      - "attendance_engine/**"
+      - "apps/desktop/**"
+      - "scripts/windows_*"
+      - ".github/workflows/test-windows.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  installed-app:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/attendance-build-cache
+          key: windows-nsis-cli2.11.4-nsis3.11-utils0.5.3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          architecture: "x64"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Prefetch verified official NSIS tools before compilation
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/windows_prepare_nsis.ps1
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Restore Windows release compilation cache
+        id: rust-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: apps/desktop/src-tauri/target/release
+          key: windows-release-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
+      - name: Test engine and build installed application
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --no-build-isolation -e ".[dev]"
+          python -m pytest
+          if ($LASTEXITCODE -ne 0) { throw "Python tests failed." }
+          ./scripts/windows_build_retry_tests.ps1
+          ./scripts/build_windows.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Windows build failed." }
+          node --test apps/desktop/tests/frontend.test.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Frontend state tests failed." }
+          cargo test --release --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --lib
+          if ($LASTEXITCODE -ne 0) { throw "Rust tests failed." }
+      - name: Preserve successful compilation before GUI validation
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: apps/desktop/src-tauri/target/release
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+      - name: Install NSIS package into a Unicode directory
+        shell: pwsh
+        run: |
+          $Installer = Get-ChildItem apps/desktop/src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
+          $InstallDir = Join-Path $env:RUNNER_TEMP "考勤安装测试"
+          $Process = Start-Process $Installer.FullName -ArgumentList @('/S', "/D=$InstallDir") -PassThru -Wait
+          if ($Process.ExitCode -ne 0) { throw "Installer failed: $($Process.ExitCode)" }
+          $Application = Get-ChildItem $InstallDir -Filter *.exe | Where-Object { $_.Name -notmatch 'uninstall' } | Select-Object -First 1
+          $Engine = Get-ChildItem $InstallDir -Recurse -Filter attendance-engine.exe | Select-Object -First 1
+          if (-not $Application -or -not $Engine) { throw "Installed application or engine missing." }
+          "ATTENDANCE_APP=$($Application.FullName)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "ATTENDANCE_ENGINE=$($Engine.FullName)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Prepare native Windows UI automation
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -m pip install selenium pywinauto psutil pillow
+          if ($LASTEXITCODE -ne 0) { throw "UI test dependencies failed." }
+          ./scripts/windows_prepare_webdriver.ps1
+      - name: Verify Unicode paths, frozen engine and installed UI
+        shell: pwsh
+        run: |
+          # WebView2 >=150 ignores debugging environment variables in elevated hosts.
+          # Grant only this runner account access before executing the suite at Medium integrity.
+          $RunnerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          icacls "$env:GITHUB_WORKSPACE" /grant "*$($RunnerSid):(OI)(CI)M"
+          if ($LASTEXITCODE -ne 0) { throw "Workspace permission preparation failed." }
+          icacls "$env:RUNNER_TEMP" /grant "*$($RunnerSid):(OI)(CI)M"
+          if ($LASTEXITCODE -ne 0) { throw "Temporary directory permission preparation failed." }
+          & "$env:ATTENDANCE_GSUDO" --integrity Medium --wait (Get-Command python).Source scripts/windows_smoke.py --app "$env:ATTENDANCE_APP" --engine "$env:ATTENDANCE_ENGINE" --driver "$env:ATTENDANCE_EDGEDRIVER" --output "build/windows-validation"
+          if ($LASTEXITCODE -ne 0) { throw "Installed application validation failed." }
+      - name: Upload logs, screenshots and performance results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-validation-${{ github.sha }}
+          path: |
+            build/windows-validation/*.json
+            build/windows-validation/*.png
+            build/windows-validation/*.txt
+            build/windows-validation/*.log
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload validated Windows installer
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.installer_artifact_name || format('attendance-windows-tested-{0}', github.sha) }}
+          path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 14

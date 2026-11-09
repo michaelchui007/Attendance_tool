@@ -1,7 +1,8 @@
 {
   "name": "attendance-desktop",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.2",
+  "author": "\u004d\u0069\u0063\u0068\u0061\u0065\u006c\u0043\u0068\u0075\u0069",
   "type": "module",
   "scripts": {
     "dev": "vite",

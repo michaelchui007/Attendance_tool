@@ -1,5 +1,6 @@
 import type { AttendanceResult } from "../types";
 import { formatMinutes } from "../formatters";
+import { attentionLabel, leaveBreakdown, needsAttention } from "../attendanceState";
 
 export type InsightKey = "required" | "effective" | "overtime" | "leave" | "net" | "abnormal" | "calendar";
 
@@ -61,17 +62,14 @@ export default function InsightDrawer({
   const lunchTotal = completeDays.reduce((sum, day) => sum + day.lunchDeductionMinutes, 0);
   const baseWorkdayOvertime = result.days.reduce((sum, day) => {
     if (day.requiredStandardMinutes === 0 || day.actualEffectiveMinutes === null) return sum;
-    return sum + Math.max(0, day.actualEffectiveMinutes - 480);
-  }, 0);
-  const benefitOvertime = result.days.reduce((sum, day) => {
-    if (day.requiredStandardMinutes === 0 || day.extraMinutes === null || day.actualEffectiveMinutes === null) return sum;
-    return sum + Math.max(0, day.extraMinutes - Math.max(0, day.actualEffectiveMinutes - 480));
+    return sum + Math.max(0, day.actualEffectiveMinutes - day.requiredStandardMinutes);
   }, 0);
   const restOvertime = result.days.reduce((sum, day) => {
     if (day.requiredStandardMinutes > 0) return sum;
     return sum + (day.extraMinutes || 0);
   }, 0);
-  const abnormalDays = result.days.filter((day) => day.status !== "正常");
+  const abnormalDays = result.days.filter(needsAttention);
+  const deductions = leaveBreakdown(result.days);
 
   const requiredGroups = Array.from(
     workdays.reduce((groups, day) => {
@@ -85,28 +83,28 @@ export default function InsightDrawer({
 
   const abnormalGroups = Array.from(
     abnormalDays.reduce((groups, day) => {
-      groups.set(day.status, (groups.get(day.status) || 0) + 1);
+      const status = attentionLabel(day);
+      groups.set(status, (groups.get(status) || 0) + 1);
       return groups;
     }, new Map<string, number>()),
   );
 
-  let runningBalance = 0;
-  const balanceRows = result.days
-    .map((day) => {
-      const delta = (day.extraMinutes || 0) - day.compensatoryLeaveMinutes;
-      runningBalance += delta;
-      return { day, delta, balance: runningBalance };
-    })
-    .filter((item) => item.delta !== 0);
+  // 未知扣减会使后续累计余额未知，不能按零继续累计。
+  let runningBalance: number | null = 0;
+  const balanceRows = result.days.filter(day => day.covered !== false).map((day) => {
+    const delta = day.netExtraMinutes;
+    runningBalance = runningBalance === null || delta === null ? null : runningBalance + delta;
+    return { day, delta, balance: runningBalance };
+  }).filter((item) => item.delta !== 0);
 
   const titles: Record<InsightKey, { eyebrow: string; title: string; value: string }> = {
     required: { eyebrow: "STANDARD HOURS", title: "应计标准工时", value: formatMinutes(result.summary.requiredStandardMinutes) },
     effective: { eyebrow: "EFFECTIVE HOURS", title: "实际有效工时", value: formatMinutes(result.summary.actualEffectiveMinutes) },
     overtime: { eyebrow: "OVERTIME", title: "加班时长", value: formatMinutes(result.summary.extraMinutes) },
-    leave: { eyebrow: "COMPENSATORY LEAVE", title: "调休时长", value: formatMinutes(result.summary.compensatoryLeaveMinutes) },
-    net: { eyebrow: "NET OVERTIME", title: "净剩加班时长", value: formatMinutes(result.summary.netExtraMinutes) },
-    abnormal: { eyebrow: "ATTENDANCE ALERTS", title: "异常日期", value: result.summary.abnormalDayCount + " 天" },
-    calendar: { eyebrow: "HOLIDAY CALENDAR", title: "节假日数据", value: result.calendar.years.length + " 个年份" },
+    leave: { eyebrow: "COMPENSATORY LEAVE", title: "实际调休扣减", value: result.summary.compensatoryLeaveMinutes === null ? "待核对" : formatMinutes(result.summary.compensatoryLeaveMinutes) },
+    net: { eyebrow: "NET OVERTIME", title: "净剩加班时长", value: result.summary.netExtraMinutes === null ? "待核对" : formatMinutes(result.summary.netExtraMinutes) },
+    abnormal: { eyebrow: "ATTENDANCE ALERTS", title: "待处理日期", value: abnormalDays.length + " 天" },
+    calendar: { eyebrow: "HOLIDAY CALENDAR", title: "节假日数据", value: (result.calendar.years || []).length + " 个年份" },
   };
   const heading = titles[active];
 
@@ -123,12 +121,12 @@ export default function InsightDrawer({
           {active === "required" && (
             <section className="insight-section">
               <h3>工作日构成</h3>
-              <p>标准工时只由日期类型决定，与当天是否缺卡无关。</p>
+              <p>工作日采用本次配置的标准工时，缺卡不会减少标准；未导入日期不纳入合计。</p>
               <div className="breakdown-list">
                 {requiredGroups.map(([dayType, group]) => (
-                  <BreakdownRow key={dayType} label={dayType} note={group.count + " 天 × 8 小时"} value={formatMinutes(group.minutes)} />
+                  <BreakdownRow key={dayType} label={dayType} note={group.count + " 天，按本次标准工时累计"} value={formatMinutes(group.minutes)} />
                 ))}
-                <BreakdownRow label="休息日" note={(result.days.length - workdays.length) + " 天 × 0 小时"} value="0小时00分钟" />
+                <BreakdownRow label="休息日" note={(result.days.filter(day => day.covered !== false).length - workdays.length) + " 天 × 0 小时"} value="0小时00分钟" />
               </div>
             </section>
           )}
@@ -158,10 +156,9 @@ export default function InsightDrawer({
           {active === "overtime" && (
             <section className="insight-section">
               <h3>加班来源</h3>
-              <p>工作日超过 8 小时的部分、实际生效的地点福利和休息日打卡共同组成加班时长。</p>
+              <p>工作日实际有效工时超过所配标准工时的部分，加上休息日完整打卡跨度。地点不再影响结果。</p>
               <div className="breakdown-list">
                 <BreakdownRow label="工作日超时" value={formatMinutes(baseWorkdayOvertime)} />
-                <BreakdownRow label="地点福利折算" note="只计算实际进入加班的部分" value={formatMinutes(benefitOvertime)} />
                 <BreakdownRow label="休息日打卡" value={formatMinutes(restOvertime)} />
                 <BreakdownRow label="合计" value={formatMinutes(result.summary.extraMinutes)} />
               </div>
@@ -170,12 +167,18 @@ export default function InsightDrawer({
 
           {active === "leave" && (
             <section className="insight-section">
-              <h3>已识别的调休申请</h3>
-              <p>相同日期、相同申请内容只扣除一次。</p>
+              <h3>实际扣减构成</h3>
+              <p>人工值替代当日自动扣减，不重复叠加；点击日期可查看修订与原始依据。</p>
+              <BreakdownRow label="实际扣减合计" value={result.summary.compensatoryLeaveMinutes === null ? "待核对" : formatMinutes(result.summary.compensatoryLeaveMinutes)} />
+              <BreakdownRow label="自动扣减" value={deductions.automaticMinutes === null ? "待核对" : formatMinutes(deductions.automaticMinutes)} />
+              <BreakdownRow label="手动扣减" value={deductions.manualMinutes === null ? "待核对" : formatMinutes(deductions.manualMinutes)} />
+              {!!deductions.manualDays.length && <div className="leave-record-list" aria-label="手动调休扣减明细">{deductions.manualDays.map(day => <button key={day.workDate} className="leave-record manual-leave-record" onClick={() => onSelectDay(day.workDate)}><div><span>{day.workDate} · 手动指定</span><strong>{day.compensatoryLeaveMinutes === null ? "待核对" : formatMinutes(day.compensatoryLeaveMinutes)}</strong></div><p>{day.leaveReason || "未记录原因"}</p><small>自动建议：{day.autoCompensatoryLeaveMinutes === null ? "待核对" : formatMinutes(day.autoCompensatoryLeaveMinutes)}</small></button>)}</div>}
+              <h3>原始调休申请</h3>
+              <p>以下保留源表填报原值，不能直接相加代替实际扣减。没有源申请的手动扣减列在上方。</p>
               {result.compensatoryLeaves.length ? (
                 <div className="leave-record-list">
-                  {result.compensatoryLeaves.map((record) => (
-                    <button key={record.workDate + record.description} className="leave-record" onClick={() => onSelectDay(record.workDate)}>
+                  {result.compensatoryLeaves.map((record, index) => (
+                    <button key={record.workDate + record.description + index} className="leave-record" onClick={() => onSelectDay(record.workDate)}>
                       <div><span>{record.workDate}</span><strong>{formatMinutes(record.minutes)}</strong></div>
                       <p>{record.description}</p>
                       <small>来自 {record.sourceSheet} · 第 {record.sourceRow} 行</small>
@@ -193,21 +196,24 @@ export default function InsightDrawer({
                 <div className="net-equation">
                   <div><span>加班</span><strong>{formatMinutes(result.summary.extraMinutes)}</strong></div>
                   <b>−</b>
-                  <div><span>调休</span><strong>{formatMinutes(result.summary.compensatoryLeaveMinutes)}</strong></div>
+                  <div><span>调休扣减</span><strong>{result.summary.compensatoryLeaveMinutes === null ? "待核对" : formatMinutes(result.summary.compensatoryLeaveMinutes)}</strong></div>
+                  <b>−</b>
+                  <div><span>工时不足</span><strong>{formatMinutes(result.summary.shortfallMinutes ?? 0)}</strong></div>
                   <b>=</b>
-                  <div className="highlight"><span>净剩</span><strong>{formatMinutes(result.summary.netExtraMinutes)}</strong></div>
+                  <div className="highlight"><span>净剩</span><strong>{result.summary.netExtraMinutes === null ? "待核对" : formatMinutes(result.summary.netExtraMinutes)}</strong></div>
                 </div>
               </section>
               <section className="insight-section">
-                <h3>逐日余额变化</h3>
+                <p>无调休申请且未手动指定扣减的完整工作日，不足标准工时的部分计入扣减。已有调休或手动扣减时沿用对应规则，不重复扣减；缺卡不推定为全天工时不足。</p>
+                <h3>已覆盖日期余额变化</h3>{result.summary.isPartial && <p>存在未导入区间，以下余额仅代表已覆盖日期。</p>}
                 <div className="balance-list">
                   {balanceRows.map(({ day, delta, balance }) => (
                     <DateButton
                       key={day.workDate}
                       date={day.workDate}
-                      title={(delta >= 0 ? "增加 " : "减少 ") + formatMinutes(Math.abs(delta)) + " · 余额 " + formatMinutes(balance)}
-                      value={(delta >= 0 ? "+" : "-") + formatMinutes(Math.abs(delta))}
-                      tone={delta >= 0 ? "positive" : "negative"}
+                      title={(delta === null ? "当日扣减待核对" : (delta >= 0 ? "增加 " : "减少 ") + formatMinutes(Math.abs(delta))) + " · 余额 " + (balance === null ? "待核对" : formatMinutes(balance))}
+                      value={delta === null ? "待核对" : (delta >= 0 ? "+" : "-") + formatMinutes(Math.abs(delta))}
+                      tone={delta === null ? "warning" : delta >= 0 ? "positive" : "negative"}
                       onClick={() => onSelectDay(day.workDate)}
                     />
                   ))}
@@ -219,17 +225,17 @@ export default function InsightDrawer({
           {active === "abnormal" && (
             <>
               <section className="insight-section">
-                <h3>异常类型</h3>
+                <h3>需要处理的事项</h3>
                 <div className="breakdown-list">
                   {abnormalGroups.map(([status, count]) => <BreakdownRow key={status} label={status} value={count + " 天"} />)}
                 </div>
-                <button className="insight-action" onClick={onShowAbnormal}>在每日明细中查看全部异常</button>
+                <button className="insight-action" onClick={onShowAbnormal}>在每日明细中查看待处理事项</button>
               </section>
               <section className="insight-section">
-                <h3>异常日期</h3>
+                <h3>待处理日期</h3>
                 <div className="balance-list">
                   {abnormalDays.map((day) => (
-                    <DateButton key={day.workDate} date={day.workDate} title={day.dayType} value={day.status} tone="warning" onClick={() => onSelectDay(day.workDate)} />
+                    <DateButton key={day.workDate} date={day.workDate} title={day.attentionReasons?.map(reason => reason.action).join("；") || day.dayType} value={attentionLabel(day)} tone="warning" onClick={() => onSelectDay(day.workDate)} />
                   ))}
                 </div>
               </section>
@@ -241,15 +247,15 @@ export default function InsightDrawer({
               <h3>当前数据来源</h3>
               <p>软件可能联网更新节假日安排，但不会上传考勤文件。</p>
               <div className="calendar-source-list">
-                {result.calendar.years.map((item) => (
+                {(result.calendar.years || []).map((item) => (
                   <div className="calendar-source-item" key={item.year}>
                     <span>{item.year}</span>
                     <div><strong>{sourceLabel(item.source)}</strong>{item.fetchedAt && <small>更新时间：{new Date(item.fetchedAt).toLocaleString("zh-CN")}</small>}</div>
                   </div>
                 ))}
               </div>
-              {result.calendar.warnings.length > 0 && (
-                <div className="calendar-warnings">{result.calendar.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div>
+              {(result.calendar.warnings || []).length > 0 && (
+                <div className="calendar-warnings">{(result.calendar.warnings || []).map((warning) => <p key={warning}>{warning}</p>)}</div>
               )}
             </section>
           )}
